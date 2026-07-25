@@ -1,0 +1,39 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "binary"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  fullName  String
+  username  String   @unique
+  password  String
+  role      String   @default("student")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  files     File[]
+}
+
+model File {
+  id           Int      @id @default(autoincrement())
+  title        String
+  description  String?
+  courseCode   String?
+  type         String   // 'Material' or 'Past Question'
+  filename     String
+  filepath     String
+  mimetype     String
+  uploaderName String
+  downloads    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Relationship to User
+  uploadedBy   Int
+  user         User     @relation(fields: [uploadedBy], references: [id], onDelete: Cascade)
+}
