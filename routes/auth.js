@@ -50,27 +50,57 @@ router.post('/login', async (req, res) => {
 
   try {
     if (!username || !username.toUpperCase().startsWith('BMS')) {
-      return res.status(400).json({ message: 'Access denied: Invalid matriculation number.' });
+      return res.status(400).json({
+        message: 'Access denied: Invalid matriculation number.'
+      });
     }
 
     const user = await prisma.user.findUnique({
       where: { username: username.toUpperCase() }
     });
-    
-    if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
+    if (!user) {
+      return res.status(400).json({
+        message: 'Invalid credentials.'
+      });
+    }
+
+    const isMatch = await bcrypt.compare(
+      password,
+      user.password
+    );
+
+    if (!isMatch) {
+      return res.status(400).json({
+        message: 'Invalid credentials.'
+      });
+    }
 
     const token = jwt.sign(
-      { id: user.id, fullName: user.fullName, role: user.role }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '7d' }
+      {
+        id: user.id,
+        fullName: user.fullName,
+        role: user.role
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: '7d'
+      }
     );
-    
-    res.json({ token, fullName: user.fullName });
+
+    res.json({
+      token,
+      fullName: user.fullName,
+      username: user.username,
+      role: user.role
+    });
+
   } catch (error) {
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message
+    });
+
   }
 });
 
