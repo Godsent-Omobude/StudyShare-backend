@@ -10,8 +10,7 @@ import {
 import fs from "fs";
 
 const b2 = new S3Client({
-  // Backblaze B2's S3-compatible API uses us-east-1 as the signing region.
-  region: "us-east-1",
+  region: process.env.B2_REGION,
   endpoint: process.env.B2_ENDPOINT,
   credentials: {
     accessKeyId: process.env.B2_KEY_ID,
