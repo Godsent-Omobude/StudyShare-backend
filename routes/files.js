@@ -117,13 +117,18 @@ router.post(
       console.error("File upload error:", error);
 
       const status =
-        error?.$metadata?.httpStatusCode === 401 ? 502 : 500;
+        error?.$metadata?.httpStatusCode === 401 ||
+        error?.Code === "UnauthorizedAccess" ||
+        error?.code === "UnauthorizedAccess"
+          ? 502
+          : 500;
+
+      const isB2AuthError = status === 502;
 
       return res.status(status).json({
-        message:
-          status === 502
-            ? "Backblaze B2 rejected the upload. Check the B2 endpoint, region, and S3-compatible application key."
-            : error.message,
+        message: isB2AuthError
+          ? "Backblaze rejected the upload. 'Seed signature is invalid' usually means B2_KEY_ID and B2_APPLICATION_KEY do not belong together, the application key is not S3-compatible, or B2_ENDPOINT/B2_REGION does not match the bucket."
+          : error.message,
       });
     }
   }
