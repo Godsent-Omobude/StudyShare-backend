@@ -1,7 +1,6 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
 generator client {
@@ -13,8 +12,14 @@ model User {
   id        Int      @id @default(autoincrement())
   fullName  String
   username  String   @unique
+  email     String?  @unique
+  matricNumber String?
   password  String
   role      String   @default("student")
+  profilePicture String?
+  showUsernameOnMaterials Boolean @default(true)
+  theme     String   @default("system")
+  accentColor String  @default("blue")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   files     File[]

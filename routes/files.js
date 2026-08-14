@@ -96,13 +96,18 @@ router.post(
           filepath: objectKey,
           mimetype: req.file.mimetype,
           uploadedBy: req.user.id,
-          uploaderName: req.user.fullName,
+          uploaderName: req.user.showUsernameOnMaterials === false
+            ? "Anonymous"
+            : req.user.username,
         },
       });
 
       await fs.promises.unlink(req.file.path).catch(() => {});
 
-      return res.status(201).json(newFile);
+      return res.status(201).json({
+        ...newFile,
+        uploaderName: req.user.showUsernameOnMaterials ? req.user.username : null,
+      });
     } catch (error) {
       await fs.promises.unlink(req.file.path).catch(() => {});
 
@@ -138,9 +143,22 @@ router.get("/", protect, async (req, res) => {
   try {
     const files = await prisma.file.findMany({
       orderBy: { createdAt: "desc" },
+      include: {
+        user: {
+          select: {
+            username: true,
+            showUsernameOnMaterials: true,
+          },
+        },
+      },
     });
 
-    res.json(files);
+    const visibleFiles = files.map(({ user, ...file }) => ({
+      ...file,
+      uploaderName: user?.showUsernameOnMaterials ? user.username : null,
+    }));
+
+    res.json(visibleFiles);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

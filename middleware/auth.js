@@ -22,7 +22,14 @@ export const protect = async (req, res, next) => {
           id: true,
           fullName: true,
           username: true,
-          role: true
+          email: true,
+          matricNumber: true,
+          profilePicture: true,
+          showUsernameOnMaterials: true,
+          theme: true,
+          accentColor: true,
+          role: true,
+          showUsernameOnMaterials: true
         }
       });
 

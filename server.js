@@ -6,6 +6,7 @@ import authRoutes from './routes/auth.js';
 import fileRoutes from './routes/files.js';
 import aiRoutes from './routes/ai.js';
 import adminRoutes from './routes/admin.js';
+import settingsRoutes from './routes/settings.js';
 import prisma from './config/prisma.js';
 
 dotenv.config();
@@ -26,6 +27,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/files', fileRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/settings', settingsRoutes);
 
 const PORT = process.env.PORT || 5000;
 
@@ -33,7 +35,7 @@ const PORT = process.env.PORT || 5000;
 async function main() {
   try {
     await prisma.$connect();
-    console.log('PostgreSQL Database connected successfully via Prisma ORM.');
+    console.log('PostgreSQL database connected successfully via Prisma ORM.');
     app.listen(PORT, () => console.log(`StudyShare Platform running on port ${PORT}`));
   } catch (e) {
     console.error('Database connection initialization failed:', e);
