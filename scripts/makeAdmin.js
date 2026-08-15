@@ -7,7 +7,7 @@ if (!username) {
   process.exit(1);
 }
 
-const normalizedUsername = username.trim().toUpperCase();
+const normalizedUsername = username;
 
 try {
   const user = await prisma.user.findUnique({
