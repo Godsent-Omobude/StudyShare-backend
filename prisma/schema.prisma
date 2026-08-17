@@ -23,6 +23,8 @@ model User {
   accentColor String  @default("blue")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  resetPasswordTokenHash String?
+  resetPasswordExpiresAt DateTime?
   files     File[]
   flashcardSets FlashcardSet[]
 }
