@@ -6,7 +6,8 @@ import {
   createFlashcards,
   getMyFlashcards,
   getFlashcardSet,
-  deleteFlashcardSet
+  deleteFlashcardSet,
+  evaluateFlashcardAnswer
 } from "../controllers/flashcardsController.js";
 
 const router = express.Router();
@@ -18,6 +19,14 @@ router.post(
   protect,
   upload.single("document"),
   createFlashcards
+);
+
+
+// Evaluate a student's answer before the correct answer is revealed.
+router.post(
+  "/flashcards/evaluate",
+  protect,
+  evaluateFlashcardAnswer
 );
 
 // Get all flashcard sets belonging to the logged-in user.
