@@ -7,7 +7,8 @@ import {
   getMyFlashcards,
   getFlashcardSet,
   deleteFlashcardSet,
-  evaluateFlashcardAnswer
+  evaluateFlashcardAnswer,
+  savePracticeResult
 } from "../controllers/flashcardsController.js";
 
 const router = express.Router();
@@ -34,6 +35,14 @@ router.get(
   "/flashcards",
   protect,
   getMyFlashcards
+);
+
+
+// Save the latest Test Yourself result for a flashcard set.
+router.post(
+  "/flashcards/:id/practice-result",
+  protect,
+  savePracticeResult
 );
 
 // Get one flashcard set belonging to the logged-in user.

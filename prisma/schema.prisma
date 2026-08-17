@@ -52,6 +52,9 @@ model FlashcardSet {
   difficulty   String
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+  lastPracticeScore Int?
+  lastPracticeCount Int?
+  lastPracticedAt DateTime?
 
   userId       Int
   user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)

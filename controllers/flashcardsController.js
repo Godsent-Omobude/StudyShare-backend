@@ -118,6 +118,79 @@ export const deleteFlashcardSet = async (req, res) => {
   }
 };
 
+
+export const savePracticeResult = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const score = Number(req.body.score);
+    const completedCount = Number(req.body.completedCount);
+
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid flashcard set ID."
+      });
+    }
+
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Practice score must be between 0 and 100."
+      });
+    }
+
+    if (!Number.isInteger(completedCount) || completedCount < 1) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one flashcard must be completed."
+      });
+    }
+
+    const flashcardSet = await prisma.flashcardSet.findFirst({
+      where: {
+        id,
+        userId: req.user.id
+      },
+      include: {
+        flashcards: true
+      }
+    });
+
+    if (!flashcardSet) {
+      return res.status(404).json({
+        success: false,
+        message: "Flashcard set not found."
+      });
+    }
+
+    const savedSet = await prisma.flashcardSet.update({
+      where: { id },
+      data: {
+        lastPracticeScore: Math.round(score),
+        lastPracticeCount: completedCount,
+        lastPracticedAt: new Date()
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Practice result saved successfully.",
+      practiceResult: {
+        score: savedSet.lastPracticeScore,
+        completedCount: savedSet.lastPracticeCount,
+        practicedAt: savedSet.lastPracticedAt
+      }
+    });
+  } catch (error) {
+    console.error("Save practice result error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Unable to save practice result."
+    });
+  }
+};
+
 export const createFlashcards = async (req, res) => {
   let uploadedFilePath = null;
 
