@@ -155,5 +155,94 @@ router.post("/login", async (req, res) => {
     return res.status(500).json({ message: "Authentication system failure." });
   }
 });
-\n\nrouter.post("/forgot-password", async (req, res) => {\n  const email = String(req.body.email || "").trim().toLowerCase();\n\n  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {\n    return res.status(400).json({ message: "Enter a valid email address." });\n  }\n\n  try {\n    const user = await prisma.user.findFirst({ where: { email } });\n\n    // Always return the same message so the endpoint cannot be used to\n    // discover whether an email address is registered.\n    const genericMessage = "If an account with that email exists, a password reset link has been sent.";\n\n    if (!user) {\n      return res.json({ message: genericMessage });\n    }\n\n    const rawToken = crypto.randomBytes(32).toString("hex");\n    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");\n    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);\n\n    await prisma.user.update({\n      where: { id: user.id },\n      data: {\n        resetPasswordTokenHash: tokenHash,\n        resetPasswordExpiresAt: expiresAt,\n      },\n    });\n\n    const frontendUrl = String(process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");\n    const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;\n\n    await sendPasswordResetEmail({ to: user.email, resetUrl });\n\n    return res.json({ message: genericMessage });\n  } catch (error) {\n    console.error("Forgot password error:", error);\n    return res.status(500).json({ message: "Unable to process password reset request." });\n  }\n});\n\nrouter.post("/reset-password", async (req, res) => {\n  const token = String(req.body.token || "").trim();\n  const newPassword = String(req.body.password || "");\n\n  if (!token) {\n    return res.status(400).json({ message: "Reset token is required." });\n  }\n\n  if (newPassword.length < 6) {\n    return res.status(400).json({ message: "Password must be at least 6 characters." });\n  }\n\n  try {\n    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");\n\n    const user = await prisma.user.findFirst({\n      where: {\n        resetPasswordTokenHash: tokenHash,\n        resetPasswordExpiresAt: { gt: new Date() },\n      },\n    });\n\n    if (!user) {\n      return res.status(400).json({\n        message: "This password reset link is invalid or has expired.",\n      });\n    }\n\n    const hashedPassword = await bcrypt.hash(newPassword, 10);\n\n    await prisma.user.update({\n      where: { id: user.id },\n      data: {\n        password: hashedPassword,\n        resetPasswordTokenHash: null,\n        resetPasswordExpiresAt: null,\n      },\n    });\n\n    return res.json({ message: "Password reset successfully. You can now log in." });\n  } catch (error) {\n    console.error("Reset password error:", error);\n    return res.status(500).json({ message: "Unable to reset password." });\n  }\n});\n
+
+
+router.post("/forgot-password", async (req, res) => {
+  const email = String(req.body.email || "").trim().toLowerCase();
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ message: "Enter a valid email address." });
+  }
+
+  try {
+    const user = await prisma.user.findFirst({ where: { email } });
+
+    // Always return the same message so the endpoint cannot be used to
+    // discover whether an email address is registered.
+    const genericMessage = "If an account with that email exists, a password reset link has been sent.";
+
+    if (!user) {
+      return res.json({ message: genericMessage });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetPasswordTokenHash: tokenHash,
+        resetPasswordExpiresAt: expiresAt,
+      },
+    });
+
+    const frontendUrl = String(process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
+    const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;
+
+    await sendPasswordResetEmail({ to: user.email, resetUrl });
+
+    return res.json({ message: genericMessage });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    return res.status(500).json({ message: "Unable to process password reset request." });
+  }
+});
+
+router.post("/reset-password", async (req, res) => {
+  const token = String(req.body.token || "").trim();
+  const newPassword = String(req.body.password || "");
+
+  if (!token) {
+    return res.status(400).json({ message: "Reset token is required." });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ message: "Password must be at least 6 characters." });
+  }
+
+  try {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const user = await prisma.user.findFirst({
+      where: {
+        resetPasswordTokenHash: tokenHash,
+        resetPasswordExpiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "This password reset link is invalid or has expired.",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        resetPasswordTokenHash: null,
+        resetPasswordExpiresAt: null,
+      },
+    });
+
+    return res.json({ message: "Password reset successfully. You can now log in." });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    return res.status(500).json({ message: "Unable to reset password." });
+  }
+});
+
 export default router;
