@@ -8,13 +8,41 @@ import {
   getFlashcardSet,
   deleteFlashcardSet,
   evaluateFlashcardAnswer,
-  savePracticeResult
+  savePracticeResult,
+  getDocumentInfo
 } from "../controllers/flashcardsController.js";
+import { getStreak, recordStudySession } from "../controllers/streakController.js";
 
 const router = express.Router();
 
+// Study streak: read the user's current/longest streak, and record a
+// qualifying study session (min flashcard count enforced server-side).
+router.get(
+  "/streak",
+  protect,
+  getStreak
+);
+
+router.post(
+  "/streak",
+  protect,
+  recordStudySession
+);
+
+// Inspect a document right after it's selected — for PDFs this returns the
+// total page count so the frontend can show it and validate the page-range
+// fields before generation is requested.
+router.post(
+  "/pdf-info",
+  protect,
+  upload.single("document"),
+  getDocumentInfo
+);
+
 // Generate flashcards from a PDF or DOCX document.
 // The frontend must send the file using the field name: "document".
+// For PDFs, startPage/endPage (1-indexed, inclusive) may be included to
+// restrict generation to a page range; omitting them uses the whole document.
 router.post(
   "/flashcards",
   protect,

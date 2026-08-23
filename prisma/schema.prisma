@@ -25,8 +25,24 @@ model User {
   updatedAt DateTime @updatedAt
   resetPasswordTokenHash String?
   resetPasswordExpiresAt DateTime?
+  currentStreak Int @default(0)
+  longestStreak Int @default(0)
+  lastStudyDate DateTime?
+  totalStudyDays Int @default(0)
   files     File[]
   flashcardSets FlashcardSet[]
+
+  ownedCircles          StudyCircle[]       @relation("CircleOwner")
+  circleMemberships     CircleMember[]
+  circleInvitesSent     CircleInvite[]      @relation("CircleInvitesSent")
+  circleInvitesReceived CircleInvite[]      @relation("CircleInvitesReceived")
+  circleJoinRequests    CircleJoinRequest[]
+  circleMessages        CircleMessage[]
+  circleFilesShared     CircleSharedFile[] @relation("CircleFilesShared")
+  deletedCircleMessages CircleMessage[]    @relation("CircleMessageDeletedBy")
+  notificationsReceived Notification[]      @relation("NotificationRecipient")
+  notificationsCreated Notification[]      @relation("NotificationActor")
+  pinnedCircleMessages CirclePinnedMessage[]
 }
 
 model File {
@@ -46,6 +62,8 @@ model File {
   // Relationship to User
   uploadedBy   Int
   user         User     @relation(fields: [uploadedBy], references: [id], onDelete: Cascade)
+
+  circleShares CircleSharedFile[]
 }
 
 model FlashcardSet {
@@ -61,6 +79,11 @@ model FlashcardSet {
   userId       Int
   user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // When generated for a Study Circle, this set is also visible to the
+  // whole circle. Null means it's a personal set only.
+  circleId     Int?
+  circle       StudyCircle? @relation(fields: [circleId], references: [id], onDelete: SetNull)
+
   flashcards   Flashcard[]
 }
 
@@ -72,4 +95,184 @@ model Flashcard {
 
   flashcardSetId   Int
   flashcardSet     FlashcardSet    @relation(fields: [flashcardSetId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------
+// Study Circles
+// ---------------------------------------------------------------------
+
+model StudyCircle {
+  id          Int      @id @default(autoincrement())
+  name        String
+  courseCode  String?
+  description String?
+  visibility  String   @default("PRIVATE") // "PUBLIC" | "PRIVATE"
+  joinCode    String   @unique
+  joinCodeEnabled Boolean @default(true)
+  joinCodeExpiresAt DateTime?
+  joinCodeMaxUses Int?
+  joinCodeUses Int @default(0)
+  joinCodeVersion Int @default(1)
+  joinCodeRegeneratedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ownerId     Int
+  owner       User     @relation("CircleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  members       CircleMember[]
+  invites       CircleInvite[]
+  joinRequests  CircleJoinRequest[]
+  messages      CircleMessage[]
+  sharedFiles   CircleSharedFile[]
+  flashcardSets FlashcardSet[]
+  invitationLinks CircleInvitationLink[]
+  notifications Notification[]
+  pinnedMessages CirclePinnedMessage[]
+}
+
+model CircleMember {
+  id       Int      @id @default(autoincrement())
+  role     String   @default("MEMBER") // "OWNER" | "MODERATOR" | "MEMBER"
+  joinedAt DateTime @default(now())
+
+  circleId Int
+  circle   StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  userId   Int
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([circleId, userId])
+  @@index([userId])
+}
+
+// Owner/moderator-sent invites to a specific username. Used for Private
+// circles, alongside the shareable join code.
+model CircleInvite {
+  id        Int      @id @default(autoincrement())
+  status    String   @default("PENDING") // "PENDING" | "ACCEPTED" | "DECLINED"
+  createdAt DateTime @default(now())
+
+  circleId  Int
+  circle    StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  invitedUserId Int
+  invitedUser   User @relation("CircleInvitesReceived", fields: [invitedUserId], references: [id], onDelete: Cascade)
+
+  invitedByUserId Int
+  invitedByUser   User @relation("CircleInvitesSent", fields: [invitedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([invitedUserId, status])
+}
+
+// A user requesting to join a Public circle, approved/declined by the
+// owner or a moderator.
+model CircleJoinRequest {
+  id        Int      @id @default(autoincrement())
+  status    String   @default("PENDING") // "PENDING" | "APPROVED" | "DECLINED"
+  createdAt DateTime @default(now())
+
+  circleId  Int
+  circle    StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  userId    Int
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([circleId, status])
+}
+
+model CircleMessage {
+  id        Int      @id @default(autoincrement())
+  content   String
+  createdAt DateTime @default(now())
+  editedAt  DateTime?
+  deletedAt DateTime?
+
+  circleId  Int
+  circle    StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  userId    Int
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  deletedByUserId Int?
+  deletedByUser User? @relation("CircleMessageDeletedBy", fields: [deletedByUserId], references: [id], onDelete: SetNull)
+
+  pinnedMessage CirclePinnedMessage?
+  notifications Notification[]
+
+  @@index([circleId, createdAt])
+  @@index([circleId, id])
+}
+
+// Links an existing uploaded File into a circle's shared materials list.
+model CircleSharedFile {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+
+  circleId  Int
+  circle    StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  fileId    Int
+  file      File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  sharedByUserId Int
+  sharedByUser   User @relation("CircleFilesShared", fields: [sharedByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([circleId, fileId])
+}
+
+
+model CirclePinnedMessage {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+
+  circleId  Int
+  circle    StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  messageId Int      @unique
+  message   CircleMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  pinnedByUserId Int
+  pinnedByUser User @relation(fields: [pinnedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([circleId, createdAt])
+}
+
+model CircleInvitationLink {
+  id            Int      @id @default(autoincrement())
+  tokenHash     String   @unique
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  maxUses       Int?
+  uses          Int      @default(0)
+  joinCodeVersion Int
+
+  circleId      Int
+  circle        StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+}
+
+model Notification {
+  id          Int      @id @default(autoincrement())
+  type        String
+  title       String
+  body        String
+  read        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  userId      Int
+  user        User     @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+
+  actorUserId Int?
+  actorUser   User?    @relation("NotificationActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  circleId    Int?
+  circle      StudyCircle? @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  messageId   Int?
+  message     CircleMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  groupKey    String? @unique
+
+  @@index([userId, createdAt])
+  @@index([userId, read, createdAt])
 }

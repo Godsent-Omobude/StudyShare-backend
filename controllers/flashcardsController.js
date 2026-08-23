@@ -1,7 +1,65 @@
 import fs from "fs/promises";
+import path from "path";
 import prisma from "../config/prisma.js";
-import { extractText } from "../services/fileExtractor.js";
+import { extractText, getPdfPageCount } from "../services/fileExtractor.js";
 import { generateFlashcards, default as ai } from "../services/flashcardGenerator.js";
+
+// Get a PDF's total page count right after it's selected, so the frontend
+// can show "This PDF has N pages" and validate the page-range fields.
+// DOCX files have no page-range concept, so they just get acknowledged.
+export const getDocumentInfo = async (req, res) => {
+  let uploadedFilePath = null;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "Please upload a PDF or DOCX document."
+      });
+    }
+
+    uploadedFilePath = req.file.path;
+    const extension = path.extname(req.file.originalname).toLowerCase();
+
+    if (extension === ".pdf") {
+      const totalPages = await getPdfPageCount(uploadedFilePath);
+
+      return res.status(200).json({
+        success: true,
+        type: "pdf",
+        totalPages
+      });
+    }
+
+    if (extension === ".docx") {
+      return res.status(200).json({
+        success: true,
+        type: "docx",
+        totalPages: null
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: "Only PDF and DOCX files are supported for flashcard generation."
+    });
+  } catch (error) {
+    console.error("Get document info error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Unable to read the document."
+    });
+  } finally {
+    if (uploadedFilePath) {
+      try {
+        await fs.unlink(uploadedFilePath);
+      } catch (cleanupError) {
+        console.warn("Could not remove temporary AI upload:", cleanupError.message);
+      }
+    }
+  }
+};
 
 export const getMyFlashcards = async (req, res) => {
   try {
@@ -42,13 +100,11 @@ export const getFlashcardSet = async (req, res) => {
       });
     }
 
-    const flashcardSet = await prisma.flashcardSet.findFirst({
-      where: {
-        id,
-        userId: req.user.id
-      },
+    const flashcardSet = await prisma.flashcardSet.findUnique({
+      where: { id },
       include: {
-        flashcards: true
+        flashcards: true,
+        user: { select: { username: true } }
       }
     });
 
@@ -59,9 +115,37 @@ export const getFlashcardSet = async (req, res) => {
       });
     }
 
+    const isOwner = flashcardSet.userId === req.user.id;
+
+    // Not the creator: only allow viewing if this set was generated for a
+    // Study Circle the requester is a member of. Otherwise treat it the
+    // same as not existing, same as before this feature was added.
+    if (!isOwner) {
+      const membership =
+        flashcardSet.circleId &&
+        (await prisma.circleMember.findUnique({
+          where: {
+            circleId_userId: { circleId: flashcardSet.circleId, userId: req.user.id }
+          }
+        }));
+
+      if (!membership) {
+        return res.status(404).json({
+          success: false,
+          message: "Flashcard set not found."
+        });
+      }
+    }
+
+    const { user, ...setFields } = flashcardSet;
+
     return res.status(200).json({
       success: true,
-      flashcardSet
+      flashcardSet: {
+        ...setFields,
+        isOwner,
+        createdByUsername: user.username
+      }
     });
   } catch (error) {
     console.error("Get flashcard set error:", error);
@@ -207,7 +291,10 @@ export const createFlashcards = async (req, res) => {
     const {
       title,
       count = 20,
-      difficulty = "medium"
+      difficulty = "medium",
+      startPage,
+      endPage,
+      circleId
     } = req.body;
 
     const flashcardCount = Number(count);
@@ -233,7 +320,69 @@ export const createFlashcards = async (req, res) => {
       });
     }
 
-    const documentText = await extractText(uploadedFilePath);
+    // Page range only applies to PDFs. When it's omitted (or the file is a
+    // DOCX), extractText falls back to the full document — existing
+    // behaviour is unchanged.
+    const extension = path.extname(req.file.originalname).toLowerCase();
+    let pageRange = {};
+
+    if (extension === ".pdf" && (startPage !== undefined || endPage !== undefined)) {
+      const parsedStart = Number(startPage);
+      const parsedEnd = Number(endPage);
+
+      if (!Number.isInteger(parsedStart) || !Number.isInteger(parsedEnd)) {
+        return res.status(400).json({
+          success: false,
+          message: "Start page and end page must be valid numbers."
+        });
+      }
+
+      if (parsedStart < 1) {
+        return res.status(400).json({
+          success: false,
+          message: "Start page cannot be less than 1."
+        });
+      }
+
+      if (parsedStart > parsedEnd) {
+        return res.status(400).json({
+          success: false,
+          message: "Start page cannot be greater than end page."
+        });
+      }
+
+      pageRange = { startPage: parsedStart, endPage: parsedEnd };
+    }
+
+    // Generating "for the circle" is optional — when a circleId is sent,
+    // verify the requester is actually a member before tagging the set,
+    // so a set can't be attributed to a circle someone doesn't belong to.
+    let parsedCircleId = null;
+    if (circleId !== undefined && circleId !== null && circleId !== "") {
+      parsedCircleId = Number(circleId);
+
+      if (!Number.isInteger(parsedCircleId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid circle ID."
+        });
+      }
+
+      const membership = await prisma.circleMember.findUnique({
+        where: {
+          circleId_userId: { circleId: parsedCircleId, userId: req.user.id }
+        }
+      });
+
+      if (!membership) {
+        return res.status(403).json({
+          success: false,
+          message: "You must be a member of this circle to generate flashcards for it."
+        });
+      }
+    }
+
+    const documentText = await extractText(uploadedFilePath, pageRange);
 
     const generatedFlashcards = await generateFlashcards(
       documentText,
@@ -250,6 +399,7 @@ export const createFlashcards = async (req, res) => {
         title: title?.trim() || req.file.originalname,
         difficulty: normalizedDifficulty,
         userId: req.user.id,
+        circleId: parsedCircleId,
         flashcards: {
           create: generatedFlashcards.map((card) => ({
             front: card.front,
