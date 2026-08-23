@@ -4,6 +4,8 @@ import sendPasswordResetEmail from "../services/email.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import prisma from "../config/prisma.js";
+import { validatePassword } from "../utils/passwordPolicy.js";
+import { loginRateLimiter, recordFailedAttempt, resetAttempts } from "../middleware/loginRateLimiter.js";
 
 const router = express.Router();
 
@@ -73,8 +75,9 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    if (!password || password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters." });
+    const passwordCheck = validatePassword(password);
+    if (!passwordCheck.valid) {
+      return res.status(400).json({ message: passwordCheck.message });
     }
 
     const [usernameExists, emailExists] = await Promise.all([
@@ -129,7 +132,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", loginRateLimiter, async (req, res) => {
   const username = normalizeUsername(req.body.username);
   const { password } = req.body;
 
@@ -143,8 +146,11 @@ router.post("/login", async (req, res) => {
     });
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
+      recordFailedAttempt(req);
       return res.status(400).json({ message: "Invalid username or password." });
     }
+
+    resetAttempts(req);
 
     return res.json({
       token: createToken(user),
@@ -207,8 +213,9 @@ router.post("/reset-password", async (req, res) => {
     return res.status(400).json({ message: "Reset token is required." });
   }
 
-  if (newPassword.length < 6) {
-    return res.status(400).json({ message: "Password must be at least 6 characters." });
+  const passwordCheck = validatePassword(newPassword);
+  if (!passwordCheck.valid) {
+    return res.status(400).json({ message: passwordCheck.message });
   }
 
   try {

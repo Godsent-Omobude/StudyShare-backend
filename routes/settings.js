@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import prisma from "../config/prisma.js";
 import { protect } from "../middleware/auth.js";
 import { uploadToB2, deleteFromB2 } from "../services/b2Storage.js";
+import { validatePassword } from "../utils/passwordPolicy.js";
 
 const router = express.Router();
 const profileUploadDir = "uploads/profile";
@@ -251,8 +252,9 @@ router.patch("/password", protect, async (req, res) => {
     return res.status(400).json({ message: "Current and new passwords are required." });
   }
 
-  if (newPassword.length < 6) {
-    return res.status(400).json({ message: "New password must be at least 6 characters." });
+  const passwordCheck = validatePassword(newPassword);
+  if (!passwordCheck.valid) {
+    return res.status(400).json({ message: passwordCheck.message });
   }
 
   try {
