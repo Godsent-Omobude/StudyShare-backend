@@ -6,8 +6,21 @@ import { createCircleMessage, editCircleMessage, deleteCircleMessage, pinCircleM
 import prisma from "./config/prisma.js";
 
 export const attachSocketServer = (httpServer) => {
+  const allowedOrigins = String(process.env.FRONTEND_URL || "http://localhost:3000")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+
   const io = new Server(httpServer, {
-    cors: { origin: process.env.FRONTEND_URL || true, credentials: true },
+    cors: {
+      origin(origin, callback) {
+        if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) {
+          return callback(null, true);
+        }
+        return callback(new Error("Not allowed by CORS"));
+      },
+      credentials: true,
+    },
     transports: ["websocket", "polling"],
   });
   setIO(io);
@@ -17,6 +30,16 @@ export const attachSocketServer = (httpServer) => {
       const token = socket.handshake.auth?.token;
       if (!token) return next(new Error("Authentication required."));
       const decoded = verifyAccessToken(token);
+
+      const tokenRecord = await prisma.user.findUnique({
+        where: { id: Number(decoded.id) },
+        select: { tokenVersion: true },
+      });
+
+      if (!tokenRecord || (decoded.tokenVersion ?? 0) !== tokenRecord.tokenVersion) {
+        return next(new Error("Session expired. Please log in again."));
+      }
+
       const user = await getAuthenticatedUser(decoded.id);
       if (!user) return next(new Error("User not found."));
       socket.user = user;

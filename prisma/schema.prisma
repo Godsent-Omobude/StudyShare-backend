@@ -25,6 +25,7 @@ model User {
   updatedAt DateTime @updatedAt
   resetPasswordTokenHash String?
   resetPasswordExpiresAt DateTime?
+  tokenVersion Int @default(0)
   currentStreak Int @default(0)
   longestStreak Int @default(0)
   lastStudyDate DateTime?

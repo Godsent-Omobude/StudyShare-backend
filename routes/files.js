@@ -15,10 +15,14 @@ const router = express.Router();
 
 // Multer stores the upload temporarily on Render. The temporary file is
 // copied to B2 and removed after the B2 + database operations succeed.
+// The on-disk filename is generated server-side (never derived from the
+// user-supplied originalname) to rule out path traversal or collisions.
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, "uploads/"),
-  filename: (req, file, cb) =>
-    cb(null, `${Date.now()}-${file.originalname}`),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `${Date.now()}-${randomUUID()}${ext}`);
+  },
 });
 
 const fileFilter = (req, file, cb) => {

@@ -1,6 +1,7 @@
 import express from "express";
 import { protect } from "../middleware/auth.js";
 import upload from "../middleware/upload.js";
+import { aiGenerationLimiter } from "../middleware/rateLimiter.js";
 
 import {
   createFlashcards,
@@ -46,6 +47,7 @@ router.post(
 router.post(
   "/flashcards",
   protect,
+  aiGenerationLimiter.middleware,
   upload.single("document"),
   createFlashcards
 );

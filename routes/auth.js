@@ -2,10 +2,10 @@ import express from "express";
 import crypto from "crypto";
 import sendPasswordResetEmail from "../services/email.js";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 import prisma from "../config/prisma.js";
 import { validatePassword } from "../utils/passwordPolicy.js";
-import { loginRateLimiter, recordFailedAttempt, resetAttempts } from "../middleware/loginRateLimiter.js";
+import { createAuthToken } from "../utils/token.js";
+import { loginLimiter, registerLimiter, forgotPasswordLimiter } from "../middleware/rateLimiter.js";
 
 const router = express.Router();
 
@@ -24,12 +24,7 @@ const publicUser = (user) => ({
   accentColor: user.accentColor,
 });
 
-const createToken = (user) =>
-  jwt.sign(
-    { id: user.id, fullName: user.fullName, role: user.role },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
+const createToken = (user) => createAuthToken(user);
 
 router.get("/check-username/:username", async (req, res) => {
   try {
@@ -50,7 +45,7 @@ router.get("/check-username/:username", async (req, res) => {
   }
 });
 
-router.post("/register", async (req, res) => {
+router.post("/register", registerLimiter.middleware, async (req, res) => {
   const { fullName, username, email, matricNumber, password } = req.body;
   const normalizedUsername = normalizeUsername(username);
   const normalizedEmail = String(email || "").trim().toLowerCase();
@@ -132,7 +127,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-router.post("/login", loginRateLimiter, async (req, res) => {
+router.post("/login", loginLimiter.middleware, async (req, res) => {
   const username = normalizeUsername(req.body.username);
   const { password } = req.body;
 
@@ -146,11 +141,11 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     });
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
-      recordFailedAttempt(req);
+      loginLimiter.recordAttempt(req);
       return res.status(400).json({ message: "Invalid username or password." });
     }
 
-    resetAttempts(req);
+    loginLimiter.reset(req);
 
     return res.json({
       token: createToken(user),
@@ -163,7 +158,7 @@ router.post("/login", loginRateLimiter, async (req, res) => {
 });
 
 
-router.post("/forgot-password", async (req, res) => {
+router.post("/forgot-password", forgotPasswordLimiter.middleware, async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -242,6 +237,10 @@ router.post("/reset-password", async (req, res) => {
         password: hashedPassword,
         resetPasswordTokenHash: null,
         resetPasswordExpiresAt: null,
+        // Invalidate any existing session tokens (e.g. a stolen token) —
+        // this is exactly the situation a password reset is meant to
+        // recover from.
+        tokenVersion: { increment: 1 },
       },
     });
 

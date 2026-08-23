@@ -16,7 +16,28 @@ import prisma from './config/prisma.js';
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+// Only allow the app's own frontend(s) to call this API with credentials.
+// FRONTEND_URL may be a single URL or a comma-separated list (e.g. a
+// production domain plus a Vercel preview URL). Requests with no Origin
+// header (server-to-server calls, curl, Postman) are allowed through since
+// they aren't subject to browser same-origin protections anyway.
+const allowedOrigins = String(process.env.FRONTEND_URL || "http://localhost:3000")
+  .split(",")
+  .map((origin) => origin.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 if (!fs.existsSync('uploads')) {
