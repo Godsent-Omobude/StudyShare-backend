@@ -48,7 +48,7 @@ model User {
   circleInvitesReceived CircleInvite[]      @relation("CircleInvitesReceived")
   circleJoinRequests    CircleJoinRequest[]
   circleMessages        CircleMessage[]
-  circleFilesShared     CircleSharedFile[]
+  circleFilesShared     CircleSharedFile[] @relation("CircleFilesShared")
   deletedCircleMessages CircleMessage[]    @relation("CircleMessageDeletedBy")
   notificationsReceived Notification[]      @relation("NotificationRecipient")
   notificationsCreated Notification[]      @relation("NotificationActor")
