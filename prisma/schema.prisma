@@ -26,6 +26,11 @@ model User {
   resetPasswordTokenHash String?
   resetPasswordExpiresAt DateTime?
   tokenVersion Int @default(0)
+  emailVerified Boolean @default(false)
+  verificationCodeHash String?
+  verificationCodeExpiresAt DateTime?
+  verificationAttempts Int @default(0)
+  verificationCodeSentAt DateTime?
   currentStreak Int @default(0)
   longestStreak Int @default(0)
   lastStudyDate DateTime?
@@ -43,7 +48,7 @@ model User {
   circleInvitesReceived CircleInvite[]      @relation("CircleInvitesReceived")
   circleJoinRequests    CircleJoinRequest[]
   circleMessages        CircleMessage[]
-  circleFilesShared     CircleSharedFile[]  @relation("CircleFilesShared")
+  circleFilesShared     CircleSharedFile[]
   deletedCircleMessages CircleMessage[]    @relation("CircleMessageDeletedBy")
   notificationsReceived Notification[]      @relation("NotificationRecipient")
   notificationsCreated Notification[]      @relation("NotificationActor")

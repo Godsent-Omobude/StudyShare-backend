@@ -46,4 +46,47 @@ const sendPasswordResetEmail = async ({ to, resetUrl }) => {
   }
 };
 
+export const sendVerificationEmail = async ({ to, code }) => {
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
+  const senderName = process.env.BREVO_SENDER_NAME || "Study2Gate";
+
+  if (!apiKey || !senderEmail) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[Email verification] Email not configured. Verification code for ${to}: ${code}`);
+      return;
+    }
+    throw new Error("Verification email service is not configured.");
+  }
+
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": apiKey,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      sender: { email: senderEmail, name: senderName },
+      to: [{ email: to }],
+      subject: "Verify your Study2Gate email address",
+      htmlContent: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a">
+          <h2>Verify your email address</h2>
+          <p>Enter this code in Study2Gate to verify your email address:</p>
+          <p style="font-size:32px;font-weight:800;letter-spacing:8px;margin:24px 0">${code}</p>
+          <p>This code will expire in 15 minutes.</p>
+          <p>If you did not create a Study2Gate account, you can safely ignore this email.</p>
+        </div>
+      `,
+    }),
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    console.error("Brevo error:", details);
+    throw new Error("Unable to send verification email.");
+  }
+};
+
 export default sendPasswordResetEmail;

@@ -84,6 +84,23 @@ export const forgotPasswordLimiter = createRateLimiter({
   message: "Too many password reset requests. Please try again later.",
 });
 
+// Manual mode: only failed code attempts count, so a legitimate user
+// re-requesting the page isn't penalised — mirrors loginLimiter.
+export const verifyEmailLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  keyPrefix: "verify-email",
+  message: "Too many verification attempts. Please try again later.",
+  manual: true,
+});
+
+export const resendVerificationLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 4,
+  keyPrefix: "resend-verification",
+  message: "Too many verification code requests. Please try again later.",
+});
+
 export const aiGenerationLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000,
   max: 20,

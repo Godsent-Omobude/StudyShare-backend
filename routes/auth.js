@@ -1,17 +1,50 @@
 import express from "express";
 import crypto from "crypto";
-import sendPasswordResetEmail from "../services/email.js";
+import sendPasswordResetEmail, { sendVerificationEmail } from "../services/email.js";
 import bcrypt from "bcryptjs";
 import prisma from "../config/prisma.js";
 import { validatePassword } from "../utils/passwordPolicy.js";
 import { createAuthToken } from "../utils/token.js";
 import { setAuthCookie, clearAuthCookie } from "../utils/cookies.js";
-import { loginLimiter, registerLimiter, forgotPasswordLimiter } from "../middleware/rateLimiter.js";
+import {
+  loginLimiter,
+  registerLimiter,
+  forgotPasswordLimiter,
+  verifyEmailLimiter,
+  resendVerificationLimiter,
+} from "../middleware/rateLimiter.js";
 import { protect } from "../middleware/auth.js";
 
 const router = express.Router();
 
 const normalizeUsername = (value) => String(value || "").trim().toLowerCase();
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+// 15 minutes to enter the code before it expires and a fresh one is needed.
+const VERIFICATION_CODE_TTL_MS = 15 * 60 * 1000;
+const MAX_VERIFICATION_ATTEMPTS = 5;
+
+const generateVerificationCode = () => String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+const hashVerificationCode = (code) => crypto.createHash("sha256").update(code).digest("hex");
+
+// Generates a fresh code, stores its hash + expiry on the user, resets the
+// per-user attempt counter, and emails it. Shared by register + resend.
+const issueVerificationCode = async (user) => {
+  const code = generateVerificationCode();
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      verificationCodeHash: hashVerificationCode(code),
+      verificationCodeExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+      verificationAttempts: 0,
+      verificationCodeSentAt: new Date(),
+    },
+  });
+
+  await sendVerificationEmail({ to: user.email, code });
+};
 
 const publicUser = (user) => ({
   id: user.id,
@@ -108,10 +141,16 @@ router.post("/register", registerLimiter.middleware, async (req, res) => {
       },
     });
 
-    const token = createToken(user);
-    setAuthCookie(res, token);
+    // Accounts start unverified — no auth cookie is issued here. The user
+    // must enter the emailed code (see /verify-email) before they can log
+    // in at all.
+    await issueVerificationCode(user);
 
-    return res.status(201).json(publicUser(user));
+    return res.status(201).json({
+      verificationRequired: true,
+      email: user.email,
+      message: "Account created. Enter the 6-digit code we emailed you to verify your account.",
+    });
   } catch (error) {
     if (error?.code === "P2002") {
       const target = Array.isArray(error.meta?.target) ? error.meta.target.join(", ") : "";
@@ -146,6 +185,15 @@ router.post("/login", loginLimiter.middleware, async (req, res) => {
     }
 
     loginLimiter.reset(req);
+
+    if (!user.emailVerified) {
+      return res.status(403).json({
+        verificationRequired: true,
+        email: user.email,
+        message: "Please verify your email address before logging in.",
+      });
+    }
+
     setAuthCookie(res, createToken(user));
 
     return res.json(publicUser(user));
@@ -246,6 +294,95 @@ router.post("/reset-password", async (req, res) => {
   } catch (error) {
     console.error("Reset password error:", error);
     return res.status(500).json({ message: "Unable to reset password." });
+  }
+});
+
+router.post("/verify-email", verifyEmailLimiter.middleware, async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const code = String(req.body.code || "").trim();
+
+  if (!email || !code) {
+    return res.status(400).json({ message: "Email and verification code are required." });
+  }
+
+  try {
+    const user = await prisma.user.findFirst({ where: { email } });
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid or expired verification code." });
+    }
+
+    if (user.emailVerified) {
+      setAuthCookie(res, createToken(user));
+      return res.json(publicUser(user));
+    }
+
+    if (
+      !user.verificationCodeHash ||
+      !user.verificationCodeExpiresAt ||
+      user.verificationCodeExpiresAt < new Date() ||
+      user.verificationAttempts >= MAX_VERIFICATION_ATTEMPTS
+    ) {
+      verifyEmailLimiter.recordAttempt(req);
+      return res.status(400).json({
+        message: "This verification code has expired. Please request a new one.",
+      });
+    }
+
+    if (hashVerificationCode(code) !== user.verificationCodeHash) {
+      verifyEmailLimiter.recordAttempt(req);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { verificationAttempts: { increment: 1 } },
+      });
+      return res.status(400).json({ message: "Invalid or expired verification code." });
+    }
+
+    verifyEmailLimiter.reset(req);
+
+    const verifiedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        verificationCodeHash: null,
+        verificationCodeExpiresAt: null,
+        verificationAttempts: 0,
+        verificationCodeSentAt: null,
+      },
+    });
+
+    setAuthCookie(res, createToken(verifiedUser));
+    return res.json(publicUser(verifiedUser));
+  } catch (error) {
+    console.error("Email verification error:", error);
+    return res.status(500).json({ message: "Unable to verify email address." });
+  }
+});
+
+router.post("/resend-verification", resendVerificationLimiter.middleware, async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).json({ message: "Enter a valid email address." });
+  }
+
+  // Same generic response whether or not the account exists / is already
+  // verified, so this endpoint can't be used to probe registered emails.
+  const genericMessage = "If that account needs verification, a new code has been sent.";
+
+  try {
+    const user = await prisma.user.findFirst({ where: { email } });
+
+    if (!user || user.emailVerified) {
+      return res.json({ message: genericMessage });
+    }
+
+    await issueVerificationCode(user);
+
+    return res.json({ message: genericMessage });
+  } catch (error) {
+    console.error("Resend verification error:", error);
+    return res.status(500).json({ message: "Unable to resend verification code." });
   }
 });
 
