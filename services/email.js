@@ -1,8 +1,9 @@
 const sendPasswordResetEmail = async ({ to, resetUrl }) => {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.EMAIL_FROM;
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
+  const senderName = process.env.BREVO_SENDER_NAME || "Study2Gate";
 
-  if (!apiKey || !from) {
+  if (!apiKey || !senderEmail) {
     if (process.env.NODE_ENV !== "production") {
       console.log(`[Password reset] Email not configured. Reset link for ${to}: ${resetUrl}`);
       return;
@@ -10,17 +11,18 @@ const sendPasswordResetEmail = async ({ to, resetUrl }) => {
     throw new Error("Password reset email service is not configured.");
   }
 
-  const response = await fetch("https://api.resend.com/emails", {
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      "api-key": apiKey,
       "Content-Type": "application/json",
+      Accept: "application/json",
     },
     body: JSON.stringify({
-      from,
-      to: [to],
+      sender: { email: senderEmail, name: senderName },
+      to: [{ email: to }],
       subject: "Reset your StudyShare password",
-      html: `
+      htmlContent: `
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a">
           <h2>Reset your StudyShare password</h2>
           <p>We received a request to reset your StudyShare password.</p>
@@ -39,7 +41,7 @@ const sendPasswordResetEmail = async ({ to, resetUrl }) => {
 
   if (!response.ok) {
     const details = await response.text();
-    console.error("Resend error:", details);
+    console.error("Brevo error:", details);
     throw new Error("Unable to send password reset email.");
   }
 };

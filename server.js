@@ -16,6 +16,7 @@ import prisma from './config/prisma.js';
 dotenv.config();
 
 const app = express();
+app.set("trust proxy", 1);
 
 // Only allow the app's own frontend(s) to call this API with credentials.
 // FRONTEND_URL may be a single URL or a comma-separated list (e.g. a

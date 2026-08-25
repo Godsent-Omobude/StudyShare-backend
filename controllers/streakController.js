@@ -15,7 +15,7 @@ const streakSelect = {
 
 // Calendar-day key in UTC, e.g. "2026-08-21". Streaks are tracked by
 // calendar day rather than exact timestamps.
-const toDateKey = (date) => new Date(date).toISOString().slice(0, 10);
+const toDateKey = (date) => new Intl.DateTimeFormat("en-CA", { timeZone: process.env.APP_TIMEZONE || "Africa/Lagos" }).format(new Date(date));
 
 const daysBetweenKeys = (fromKey, toKey) => {
   const from = new Date(`${fromKey}T00:00:00Z`);

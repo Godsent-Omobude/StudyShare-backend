@@ -48,7 +48,7 @@ export const scheduleNextReview = (card, rating, now = new Date()) => {
       easeFactor: clampEase(currentEase - 0.2),
       intervalDays: 0,
       repetitions: 0,
-      dueDate: addMinutes(now, 10)
+      dueDate: addMinutes(now, 1)
     };
   }
 
