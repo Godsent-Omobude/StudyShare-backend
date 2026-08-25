@@ -39,11 +39,7 @@ export const protect = async (req, res, next) => {
 
     req.user = await getAuthenticatedUser(decoded.id);
     if (!req.user) return res.status(401).json({ message: 'User not found.' });
-
-    // Reset the 15-minute idle window since the user just made a request.
-    setAuthCookie(res, token);
-
-    return next();
+return next();
   } catch {
     return res.status(401).json({ message: 'Not authorised. Invalid token.' });
   }

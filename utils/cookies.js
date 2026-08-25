@@ -9,12 +9,13 @@ const AUTH_COOKIE_NAME = "token";
 // browser to send it at all. That combination only works over HTTPS, so it
 // only applies in production — locally (http://localhost) it falls back to
 // Lax so cookie-based login still works in dev.
-const isProduction = process.env.NODE_ENV === "production";
+const isProduction = process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
 
 const cookieOptions = () => ({
   httpOnly: true,
   secure: isProduction,
   sameSite: isProduction ? "none" : "lax",
+    path: "/",
   path: "/",
 });
 

@@ -5,7 +5,9 @@ import bcrypt from "bcryptjs";
 import prisma from "../config/prisma.js";
 import { validatePassword } from "../utils/passwordPolicy.js";
 import { createAuthToken } from "../utils/token.js";
+import { setAuthCookie, clearAuthCookie } from "../utils/cookies.js";
 import { loginLimiter, registerLimiter, forgotPasswordLimiter } from "../middleware/rateLimiter.js";
+import { protect } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -107,11 +109,9 @@ router.post("/register", registerLimiter.middleware, async (req, res) => {
     });
 
     const token = createToken(user);
+    setAuthCookie(res, token);
 
-    return res.status(201).json({
-      token,
-      ...publicUser(user),
-    });
+    return res.status(201).json(publicUser(user));
   } catch (error) {
     if (error?.code === "P2002") {
       const target = Array.isArray(error.meta?.target) ? error.meta.target.join(", ") : "";
@@ -146,11 +146,9 @@ router.post("/login", loginLimiter.middleware, async (req, res) => {
     }
 
     loginLimiter.reset(req);
+    setAuthCookie(res, createToken(user));
 
-    return res.json({
-      token: createToken(user),
-      ...publicUser(user),
-    });
+    return res.json(publicUser(user));
   } catch (error) {
     console.error("Login error:", error);
     return res.status(500).json({ message: "Authentication system failure." });
@@ -249,6 +247,17 @@ router.post("/reset-password", async (req, res) => {
     console.error("Reset password error:", error);
     return res.status(500).json({ message: "Unable to reset password." });
   }
+});
+
+// Lets the frontend ask "am I logged in, and as whom" without being able to
+// read the (now httpOnly) auth cookie itself.
+router.get("/me", protect, (req, res) => {
+  return res.json(publicUser(req.user));
+});
+
+router.post("/logout", (req, res) => {
+  clearAuthCookie(res);
+  return res.json({ message: "Logged out." });
 });
 
 export default router;
