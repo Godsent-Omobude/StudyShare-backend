@@ -1,8 +1,12 @@
 import jwt from "jsonwebtoken";
 
-// Single source of truth for how long an access token lives — previously
-// this was 30d in one code path and 7d in another.
-export const JWT_EXPIRES_IN = "7d";
+// The JWT itself stays valid for a full day — that's just a safety cap.
+// The actual "log out after being idle" behaviour comes from the cookie's
+// own expiry, which protect() below resets on every authenticated request
+// (see setAuthCookie call). So: active user → cookie keeps sliding forward
+// and never hits its 15-minute limit; idle 15+ minutes → the browser drops
+// the cookie itself and the next request has no cookie to send.
+export const JWT_EXPIRES_IN = "1d";
 
 // tokenVersion is embedded in every token and checked against the user's
 // stored tokenVersion on every request (see middleware/auth.js). Bumping

@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import prisma from '../config/prisma.js';
+import { getAuthCookie, setAuthCookie } from '../utils/cookies.js';
 
 export const verifyAccessToken = (token) => jwt.verify(token, process.env.JWT_SECRET);
 
@@ -12,12 +13,13 @@ export const getAuthenticatedUser = async (userId) => prisma.user.findUnique({
 });
 
 export const protect = async (req, res, next) => {
-  if (!req.headers.authorization?.startsWith('Bearer ')) {
+  const token = getAuthCookie(req);
+
+  if (!token) {
     return res.status(401).json({ message: 'Not authorised. No token provided.' });
   }
 
   try {
-    const token = req.headers.authorization.split(' ')[1];
     const decoded = verifyAccessToken(token);
 
     // Check the token's embedded tokenVersion against the current stored
@@ -37,6 +39,10 @@ export const protect = async (req, res, next) => {
 
     req.user = await getAuthenticatedUser(decoded.id);
     if (!req.user) return res.status(401).json({ message: 'User not found.' });
+
+    // Reset the 15-minute idle window since the user just made a request.
+    setAuthCookie(res, token);
+
     return next();
   } catch {
     return res.status(401).json({ message: 'Not authorised. Invalid token.' });

@@ -30,6 +30,10 @@ model User {
   longestStreak Int @default(0)
   lastStudyDate DateTime?
   totalStudyDays Int @default(0)
+  // Hash of the card-id order from this user's most recent "Study All"
+  // shuffle. Used purely so a freshly generated shuffle can be checked
+  // against it and re-rolled on the rare collision — no AI involved.
+  lastShuffleHash String?
   files     File[]
   flashcardSets FlashcardSet[]
 
@@ -39,11 +43,16 @@ model User {
   circleInvitesReceived CircleInvite[]      @relation("CircleInvitesReceived")
   circleJoinRequests    CircleJoinRequest[]
   circleMessages        CircleMessage[]
-  circleFilesShared     CircleSharedFile[] @relation("CircleFilesShared")
+  circleFilesShared     CircleSharedFile[]  @relation("CircleFilesShared")
   deletedCircleMessages CircleMessage[]    @relation("CircleMessageDeletedBy")
   notificationsReceived Notification[]      @relation("NotificationRecipient")
   notificationsCreated Notification[]      @relation("NotificationActor")
   pinnedCircleMessages CirclePinnedMessage[]
+
+  studySessionsCreated StudySession[]       @relation("StudySessionCreator")
+  studySessionRsvps    StudySessionRSVP[]   @relation("StudySessionRSVPUser")
+  circleNotesCreated   CircleNote[]         @relation("CircleNoteCreator")
+  circleNotesUpdated   CircleNote[]         @relation("CircleNoteUpdater")
 }
 
 model File {
@@ -94,8 +103,22 @@ model Flashcard {
   back             String
   createdAt        DateTime        @default(now())
 
+  // --- Spaced repetition (SM-2) ---
+  // easeFactor/intervalDays/repetitions follow the classic SM-2 algorithm.
+  // dueDate is when the card next becomes eligible for review; a card with
+  // no review history is due immediately (defaults to creation time).
+  easeFactor       Float           @default(2.5)
+  intervalDays     Int             @default(0)
+  repetitions      Int             @default(0)
+  dueDate          DateTime        @default(now())
+  lastReviewedAt   DateTime?
+  lastRating       String?         // "again" | "hard" | "good" | "easy"
+
   flashcardSetId   Int
   flashcardSet     FlashcardSet    @relation(fields: [flashcardSetId], references: [id], onDelete: Cascade)
+
+  @@index([flashcardSetId])
+  @@index([dueDate])
 }
 
 // ---------------------------------------------------------------------
@@ -130,6 +153,9 @@ model StudyCircle {
   invitationLinks CircleInvitationLink[]
   notifications Notification[]
   pinnedMessages CirclePinnedMessage[]
+
+  studySessions StudySession[]
+  notes         CircleNote[]
 }
 
 model CircleMember {
@@ -251,6 +277,67 @@ model CircleInvitationLink {
   circleId      Int
   circle        StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
 
+}
+
+// Lightweight session scheduling for a circle ("study session Thursday
+// 7pm"). Members can RSVP; the creator (owner/moderator) can edit or
+// cancel.
+model StudySession {
+  id              Int      @id @default(autoincrement())
+  title           String
+  description     String?
+  location        String?
+  scheduledFor    DateTime
+  durationMinutes Int      @default(60)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  circleId        Int
+  circle          StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  createdByUserId Int
+  createdByUser   User @relation("StudySessionCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  rsvps           StudySessionRSVP[]
+
+  @@index([circleId, scheduledFor])
+}
+
+model StudySessionRSVP {
+  id        Int      @id @default(autoincrement())
+  status    String   @default("GOING") // "GOING" | "MAYBE" | "DECLINED"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessionId Int
+  session   StudySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  userId    Int
+  user      User @relation("StudySessionRSVPUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
+}
+
+// Lightweight shared notes/wiki for a circle — a small set of named notes
+// any member can create or edit, so useful info doesn't get buried in
+// chat scrollback.
+model CircleNote {
+  id              Int      @id @default(autoincrement())
+  title           String
+  content         String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  circleId        Int
+  circle          StudyCircle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+
+  createdByUserId Int
+  createdByUser   User @relation("CircleNoteCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  updatedByUserId Int?
+  updatedByUser   User? @relation("CircleNoteUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([circleId, updatedAt])
 }
 
 model Notification {

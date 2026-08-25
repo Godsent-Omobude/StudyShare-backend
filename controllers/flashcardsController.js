@@ -3,6 +3,11 @@ import path from "path";
 import prisma from "../config/prisma.js";
 import { extractText, getPdfPageCount } from "../services/fileExtractor.js";
 import { generateFlashcards, default as ai } from "../services/flashcardGenerator.js";
+import {
+  VALID_RATINGS,
+  scheduleNextReview,
+  shuffleAvoidingRepeat
+} from "../services/spacedRepetition.js";
 
 // Get a PDF's total page count right after it's selected, so the frontend
 // can show "This PDF has N pages" and validate the page-range fields.
@@ -85,6 +90,143 @@ export const getMyFlashcards = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message
+    });
+  }
+};
+
+// Pulls every flashcard the user has previously generated across ALL of
+// their saved sets ("My Flashcards") into one deck, in an order that:
+//   - is randomized purely in code (Fisher-Yates, no AI call involved)
+//   - is never the same order twice in a row for this user
+// Pass ?dueOnly=true to restrict the deck to cards the spaced-repetition
+// schedule currently considers due (or never reviewed).
+export const getStudyAllFlashcards = async (req, res) => {
+  try {
+    const dueOnly = String(req.query.dueOnly || "").toLowerCase() === "true";
+
+    const sets = await prisma.flashcardSet.findMany({
+      where: { userId: req.user.id },
+      select: {
+        id: true,
+        title: true,
+        flashcards: true
+      }
+    });
+
+    const now = new Date();
+    let cards = sets.flatMap((set) =>
+      set.flashcards.map((card) => ({
+        ...card,
+        flashcardSetId: set.id,
+        setTitle: set.title
+      }))
+    );
+
+    const totalCount = cards.length;
+
+    if (dueOnly) {
+      cards = cards.filter((card) => new Date(card.dueDate) <= now);
+    }
+
+    if (cards.length === 0) {
+      return res.status(200).json({
+        success: true,
+        flashcards: [],
+        totalCount,
+        dueCount: dueOnly ? 0 : cards.length
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { lastShuffleHash: true }
+    });
+
+    const { ordered, hash } = shuffleAvoidingRepeat(cards, user?.lastShuffleHash || null);
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { lastShuffleHash: hash }
+    });
+
+    return res.status(200).json({
+      success: true,
+      flashcards: ordered,
+      totalCount,
+      dueCount: dueOnly ? ordered.length : cards.filter((card) => new Date(card.dueDate) <= now).length
+    });
+  } catch (error) {
+    console.error("Get study-all flashcards error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Unable to build your study session."
+    });
+  }
+};
+
+// Records a single "again/hard/good/easy" review for one card and
+// advances its SM-2 schedule (ease factor, interval, next due date).
+export const reviewFlashcard = async (req, res) => {
+  try {
+    const setId = Number(req.params.setId);
+    const cardId = Number(req.params.cardId);
+    const { rating } = req.body;
+
+    if (!Number.isInteger(setId) || !Number.isInteger(cardId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid flashcard set or card ID."
+      });
+    }
+
+    if (!VALID_RATINGS.includes(rating)) {
+      return res.status(400).json({
+        success: false,
+        message: `Rating must be one of: ${VALID_RATINGS.join(", ")}.`
+      });
+    }
+
+    const card = await prisma.flashcard.findFirst({
+      where: {
+        id: cardId,
+        flashcardSetId: setId,
+        flashcardSet: { userId: req.user.id }
+      }
+    });
+
+    if (!card) {
+      return res.status(404).json({
+        success: false,
+        message: "Flashcard not found."
+      });
+    }
+
+    const now = new Date();
+    const next = scheduleNextReview(card, rating, now);
+
+    const updatedCard = await prisma.flashcard.update({
+      where: { id: cardId },
+      data: {
+        easeFactor: next.easeFactor,
+        intervalDays: next.intervalDays,
+        repetitions: next.repetitions,
+        dueDate: next.dueDate,
+        lastReviewedAt: now,
+        lastRating: rating
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      flashcard: updatedCard
+    });
+  } catch (error) {
+    console.error("Review flashcard error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Unable to save this review."
     });
   }
 };

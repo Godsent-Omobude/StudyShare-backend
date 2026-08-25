@@ -25,6 +25,8 @@ import {
 } from "../controllers/circlesController.js";
 import { getJoinCodeSettings, updateJoinCodeSettings, regenerateJoinCode, disableJoinCode, enableJoinCode, createInvitationLink, joinByInvitationToken, previewInvitationToken } from "../controllers/circleCodeController.js";
 import { editMessage, deleteMessage, pinMessage, unpinMessage, listPinnedMessages, removeMember } from "../controllers/circleMessageController.js";
+import { listSessions, createSession, updateSession, deleteSession, rsvpSession } from "../controllers/circleSessionsController.js";
+import { listNotes, createNote, updateNote, deleteNote } from "../controllers/circleNotesController.js";
 
 const router = express.Router();
 
@@ -72,5 +74,18 @@ router.get("/:id/files", protect, listSharedFiles);
 router.post("/:id/files", protect, shareFile);
 
 router.get("/:id/flashcards", protect, listCircleFlashcards);
+
+// Lightweight session scheduling ("study session Thursday 7pm").
+router.get("/:id/sessions", protect, listSessions);
+router.post("/:id/sessions", protect, createSession);
+router.patch("/:id/sessions/:sessionId", protect, updateSession);
+router.delete("/:id/sessions/:sessionId", protect, deleteSession);
+router.post("/:id/sessions/:sessionId/rsvp", protect, rsvpSession);
+
+// Shared notes/wiki, so useful info doesn't get buried in chat scrollback.
+router.get("/:id/notes", protect, listNotes);
+router.post("/:id/notes", protect, createNote);
+router.patch("/:id/notes/:noteId", protect, updateNote);
+router.delete("/:id/notes/:noteId", protect, deleteNote);
 
 export default router;
