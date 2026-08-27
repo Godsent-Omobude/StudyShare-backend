@@ -39,6 +39,22 @@ model User {
   // shuffle. Used purely so a freshly generated shuffle can be checked
   // against it and re-rolled on the rare collision — no AI involved.
   lastShuffleHash String?
+
+  // --- Push notifications (Firebase Cloud Messaging) ---
+  // Per-category opt-in/out. Read by pushNotificationService before it
+  // ever sends a push for a given notification type — a category set to
+  // false here means that type of notification simply never triggers a
+  // push for this user (in-app notifications/socket events are unaffected).
+  notifyCircleMessages     Boolean @default(true)
+  notifyCircleInvitations  Boolean @default(true)
+  notifyMentions           Boolean @default(true)
+  notifyCircleActivity     Boolean @default(true)
+  notifyFlashcardActivity  Boolean @default(true)
+  notifyAccountSecurity    Boolean @default(true)
+  notifyAnnouncements      Boolean @default(true)
+
+  pushRegistrations PushRegistration[]
+
   files     File[]
   flashcardSets FlashcardSet[]
 
@@ -343,6 +359,39 @@ model CircleNote {
   updatedByUser   User? @relation("CircleNoteUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([circleId, updatedAt])
+}
+
+// A single browser/device's Firebase Cloud Messaging registration. A user
+// may be signed in on several browsers/devices at once, so this is a
+// one-to-many relation to User rather than a single token column on User.
+model PushRegistration {
+  id     Int    @id @default(autoincrement())
+  // The current FCM registration token for this browser/device. Unique
+  // because FCM issues one token per app-instance; re-registering the same
+  // token (e.g. token refresh with no real change) upserts in place instead
+  // of creating a duplicate row.
+  token  String @unique
+
+  userId Int
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Free-text device/browser label (e.g. "Chrome on Windows"), best-effort
+  // from the client's user agent — never anything sensitive.
+  deviceInfo String?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  // Bumped whenever a push is successfully delivered to this token, and
+  // whenever the client re-confirms the registration is still current.
+  lastUsedAt DateTime @default(now())
+
+  // Flipped to false (rather than deleted immediately) when FCM reports the
+  // token as invalid/unregistered, so a brief delivery failure doesn't
+  // silently drop a device — see pushNotificationService for cleanup.
+  active Boolean @default(true)
+
+  @@index([userId])
+  @@index([userId, active])
 }
 
 model Notification {

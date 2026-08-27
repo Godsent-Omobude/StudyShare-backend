@@ -1,4 +1,5 @@
 import prisma from "../config/prisma.js";
+import { sendPushForNotification } from "./pushNotificationService.js";
 
 let ioInstance = null;
 
@@ -36,6 +37,10 @@ export const createNotification = async ({ userId, type, title, body, circleId =
     include: { circle: { select: { id: true, name: true } } },
   });
   emitToUser(userId, "notification:new", notification);
+  // Fire-and-forget: a Firebase/network hiccup must never block or fail
+  // whatever action just created this notification (see the doc comment
+  // on sendPushForNotification for why this is never awaited).
+  sendPushForNotification(notification);
   return notification;
 };
 
@@ -52,6 +57,7 @@ export const notifyNewCircleMessage = async ({ circleId, actorUserId, messageId,
       include: { circle: { select: { id: true, name: true } } },
     });
     emitToUser(userId, "notification:new", notification);
+    sendPushForNotification(notification);
   }));
 };
 

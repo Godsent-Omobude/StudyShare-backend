@@ -8,6 +8,8 @@ import prisma from "../config/prisma.js";
 import { protect } from "../middleware/auth.js";
 import { uploadToB2, deleteFromB2 } from "../services/b2Storage.js";
 import { validatePassword } from "../utils/passwordPolicy.js";
+import { createAuthToken } from "../utils/token.js";
+import { setAuthCookie } from "../utils/cookies.js";
 
 const router = express.Router();
 const profileUploadDir = "uploads/profile";
@@ -176,6 +178,63 @@ router.patch("/privacy", protect, async (req, res) => {
   }
 });
 
+const selectNotificationPrefs = {
+  notifyCircleMessages: true,
+  notifyCircleInvitations: true,
+  notifyMentions: true,
+  notifyCircleActivity: true,
+  notifyFlashcardActivity: true,
+  notifyAccountSecurity: true,
+  notifyAnnouncements: true,
+};
+
+router.get("/notifications", protect, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: selectNotificationPrefs,
+    });
+
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    res.json(user);
+  } catch (error) {
+    console.error("Get notification preferences error:", error);
+    res.status(500).json({ message: "Unable to load notification preferences." });
+  }
+});
+
+router.patch("/notifications", protect, async (req, res) => {
+  const allowedKeys = Object.keys(selectNotificationPrefs);
+  const data = {};
+
+  for (const key of allowedKeys) {
+    if (req.body[key] !== undefined) {
+      if (typeof req.body[key] !== "boolean") {
+        return res.status(400).json({ message: `${key} must be true or false.` });
+      }
+      data[key] = req.body[key];
+    }
+  }
+
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ message: "No valid notification preferences supplied." });
+  }
+
+  try {
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: selectNotificationPrefs,
+    });
+
+    res.json(user);
+  } catch (error) {
+    console.error("Update notification preferences error:", error);
+    res.status(500).json({ message: "Unable to save notification preferences." });
+  }
+});
+
 router.post("/profile-picture", protect, profileUpload.single("profilePicture"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "Please choose a JPG, PNG or WEBP image up to 5 MB." });
@@ -269,11 +328,16 @@ router.patch("/password", protect, async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    await prisma.user.update({
+    // Bumping tokenVersion invalidates every other token issued for this
+    // account (e.g. on another device, or one an attacker may have
+    // obtained), so a new token is issued below to keep this session
+    // logged in.
+    const updatedUser = await prisma.user.update({
       where: { id: req.user.id },
-      data: { password: hashedPassword },
+      data: { password: hashedPassword, tokenVersion: { increment: 1 } },
     });
 
+    setAuthCookie(res, createAuthToken(updatedUser));
     res.json({ message: "Password changed successfully." });
   } catch (error) {
     console.error("Change password error:", error);
