@@ -10,7 +10,9 @@ import {
   deleteFlashcardSet,
   evaluateFlashcardAnswer,
   savePracticeResult,
-  getDocumentInfo
+  getDocumentInfo,
+  getStudyAllFlashcards,
+  reviewFlashcard
 } from "../controllers/flashcardsController.js";
 import { getStreak, recordStudySession } from "../controllers/streakController.js";
 
@@ -73,6 +75,23 @@ router.post(
   "/flashcards/:id/practice-result",
   protect,
   savePracticeResult
+);
+
+// "Study All" — every flashcard the user has ever generated, pulled
+// together into one deck and shuffled in code (never AI). Registered
+// ahead of "/flashcards/:id" so the literal path isn't shadowed by it.
+// Optional ?dueOnly=true restricts the deck to spaced-repetition-due cards.
+router.get(
+  "/flashcards/study-all",
+  protect,
+  getStudyAllFlashcards
+);
+
+// Record an "again/hard/good/easy" spaced-repetition review for one card.
+router.post(
+  "/flashcards/:setId/cards/:cardId/review",
+  protect,
+  reviewFlashcard
 );
 
 // Get one flashcard set belonging to the logged-in user.
