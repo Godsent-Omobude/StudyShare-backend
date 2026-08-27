@@ -21,11 +21,11 @@ const sendPasswordResetEmail = async ({ to, resetUrl }) => {
     body: JSON.stringify({
       sender: { email: senderEmail, name: senderName },
       to: [{ email: to }],
-      subject: "Reset your StudyShare password",
+      subject: "Reset your Study2Gate password",
       htmlContent: `
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a">
-          <h2>Reset your StudyShare password</h2>
-          <p>We received a request to reset your StudyShare password.</p>
+          <h2>Reset your Study2Gate password</h2>
+          <p>We received a request to reset your Study2Gate password.</p>
           <p>This link will expire in 30 minutes.</p>
           <p>
             <a href="${resetUrl}" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:8px;font-weight:700">
