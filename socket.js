@@ -1,5 +1,6 @@
 import { Server } from "socket.io";
 import { getAuthenticatedUser, verifyAccessToken } from "./middleware/auth.js";
+import { getAuthCookie } from "./utils/cookies.js";
 import { getMembership, canManage, canRemoveMember } from "./services/circleAccess.js";
 import { setIO, circleRoom, userRoom, emitToCircle, createNotification, removeUserFromCircleSockets } from "./services/circleRealtime.js";
 import { createCircleMessage, editCircleMessage, deleteCircleMessage, pinCircleMessage, unpinCircleMessage } from "./services/circleMessages.js";
@@ -27,7 +28,13 @@ export const attachSocketServer = (httpServer) => {
 
   io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.auth?.token;
+      // The app authenticates entirely via an httpOnly cookie (see
+      // middleware/auth.js) — there is no JWT ever exposed to client-side
+      // JS for the frontend to hand over as socket.handshake.auth.token.
+      // The Socket.IO client already connects with withCredentials: true,
+      // so the same cookie that authenticates REST requests rides along
+      // on the handshake; read it the same way `protect` does.
+      const token = getAuthCookie({ headers: socket.handshake.headers });
       if (!token) return next(new Error("Authentication required."));
       const decoded = verifyAccessToken(token);
 
