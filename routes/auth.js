@@ -4,8 +4,8 @@ import sendPasswordResetEmail, { sendVerificationEmail } from "../services/email
 import bcrypt from "bcryptjs";
 import prisma from "../config/prisma.js";
 import { validatePassword } from "../utils/passwordPolicy.js";
-import { createAuthToken } from "../utils/token.js";
-import { setAuthCookie, clearAuthCookie } from "../utils/cookies.js";
+import { createAuthToken, createPolicyPendingToken, verifyPolicyPendingToken } from "../utils/token.js";
+import { setAuthCookie, clearAuthCookie, getAuthCookie } from "../utils/cookies.js";
 import {
   loginLimiter,
   registerLimiter,
@@ -13,7 +13,8 @@ import {
   verifyEmailLimiter,
   resendVerificationLimiter,
 } from "../middleware/rateLimiter.js";
-import { protect } from "../middleware/auth.js";
+import { protect, verifyAccessToken } from "../middleware/auth.js";
+import { CURRENT_COPYRIGHT_POLICY_VERSION, hasAcceptedCurrentCopyrightPolicy } from "../utils/legalPolicy.js";
 
 const router = express.Router();
 
@@ -57,6 +58,7 @@ const publicUser = (user) => ({
   showUsernameOnMaterials: user.showUsernameOnMaterials,
   theme: user.theme,
   accentColor: user.accentColor,
+  copyrightPolicyAccepted: hasAcceptedCurrentCopyrightPolicy(user),
 });
 
 const createToken = (user) => createAuthToken(user);
@@ -81,7 +83,7 @@ router.get("/check-username/:username", async (req, res) => {
 });
 
 router.post("/register", registerLimiter.middleware, async (req, res) => {
-  const { fullName, username, email, matricNumber, password } = req.body;
+  const { fullName, username, email, matricNumber, password, copyrightPolicyAccepted } = req.body;
   const normalizedUsername = normalizeUsername(username);
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const normalizedMatric = String(matricNumber || "").trim() || null;
@@ -108,6 +110,12 @@ router.post("/register", registerLimiter.middleware, async (req, res) => {
     const passwordCheck = validatePassword(password);
     if (!passwordCheck.valid) {
       return res.status(400).json({ message: passwordCheck.message });
+    }
+
+    if (copyrightPolicyAccepted !== true) {
+      return res.status(400).json({
+        message: "You must accept the Copyright Policy to create an account.",
+      });
     }
 
     const [usernameExists, emailExists] = await Promise.all([
@@ -138,6 +146,8 @@ router.post("/register", registerLimiter.middleware, async (req, res) => {
         email: normalizedEmail,
         matricNumber: normalizedMatric,
         password: hashedPassword,
+        copyrightPolicyAcceptedAt: new Date(),
+        copyrightPolicyVersion: CURRENT_COPYRIGHT_POLICY_VERSION,
       },
     });
 
@@ -194,12 +204,70 @@ router.post("/login", loginLimiter.middleware, async (req, res) => {
       });
     }
 
+    // Mandatory Copyright Policy gate: credentials are valid, but no auth
+    // cookie is issued until the current policy version is accepted. The
+    // pendingToken can only be redeemed at /auth/accept-copyright-policy —
+    // it carries no session privileges of its own.
+    if (!hasAcceptedCurrentCopyrightPolicy(user)) {
+      return res.status(403).json({
+        copyrightPolicyAcceptanceRequired: true,
+        pendingToken: createPolicyPendingToken(user),
+        message: "Please review and accept the Copyright Policy to continue.",
+      });
+    }
+
     setAuthCookie(res, createToken(user));
 
     return res.json(publicUser(user));
   } catch (error) {
     console.error("Login error:", error);
     return res.status(500).json({ message: "Authentication system failure." });
+  }
+});
+
+// Redeems either a pendingToken (issued by /auth/login when acceptance was
+// the only thing blocking login) or an existing valid auth cookie (for a
+// user who was already signed in when the policy version changed). Either
+// way: record acceptance of the current policy version, then issue/refresh
+// the real auth cookie.
+router.post("/accept-copyright-policy", loginLimiter.middleware, async (req, res) => {
+  const { pendingToken } = req.body;
+
+  try {
+    let userId;
+
+    if (pendingToken) {
+      const decoded = verifyPolicyPendingToken(pendingToken);
+      userId = decoded.id;
+    } else {
+      const cookieToken = getAuthCookie(req);
+      if (!cookieToken) {
+        return res.status(401).json({ message: "Not authorised. No token provided." });
+      }
+      const decoded = verifyAccessToken(cookieToken);
+      userId = decoded.id;
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: Number(userId) } });
+    if (!user) {
+      return res.status(401).json({ message: "User not found." });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        copyrightPolicyAcceptedAt: new Date(),
+        copyrightPolicyVersion: CURRENT_COPYRIGHT_POLICY_VERSION,
+      },
+    });
+
+    loginLimiter.reset(req);
+    setAuthCookie(res, createToken(updatedUser));
+
+    return res.json(publicUser(updatedUser));
+  } catch (error) {
+    loginLimiter.recordAttempt(req);
+    return res.status(401).json({ message: "This request has expired. Please log in again." });
   }
 });
 

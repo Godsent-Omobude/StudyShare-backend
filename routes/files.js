@@ -14,6 +14,7 @@ import {
   scanCopyright,
   COPYRIGHT_CONFIRMATION_VERSION,
 } from "../services/copyrightScanner.js";
+import { notifyUploaderOfCopyrightEvent } from "../services/copyrightNotify.js";
 
 const router = express.Router();
 
@@ -70,6 +71,17 @@ const createObjectKey = (filename) => {
   return `documents/${randomUUID()}-${safeBase}${ext}`;
 };
 
+// A file is visible/downloadable to the general population only once
+// it's CLEARED. The uploader can always see their own file (so they know
+// what's happening with it); admins can always see everything. This is
+// enforced here — not just hidden in the frontend — per the copyright
+// access-control requirement.
+const isVisibleToViewer = (file, viewerId, viewerRole) => {
+  if (viewerRole === "admin") return true;
+  if (file.uploadedBy === viewerId) return true;
+  return file.copyrightStatus === "CLEARED";
+};
+
 router.post(
   "/upload",
   protect,
@@ -91,40 +103,47 @@ router.post(
     }
 
     let objectKey = null;
+    const normalizedCourseCode = courseCode ? courseCode.toUpperCase() : null;
 
     try {
-      // Scan before permanent B2 storage. Suspicious files never become
-      // publicly downloadable.
-      const copyrightScan = await scanCopyright({
-        filePath: req.file.path,
-        originalName: req.file.originalname,
-      });
-
-      if (copyrightScan.status !== "APPROVED") {
-        await fs.promises.unlink(req.file.path).catch(() => {});
-
-        const duplicateMessage = copyrightScan.duplicate
-          ? `An identical file is already available as "${copyrightScan.duplicate.title}".`
-          : null;
-
-        return res.status(422).json({
-          code:
-            copyrightScan.status === "BLOCKED"
-              ? "COPYRIGHT_BLOCKED"
-              : "COPYRIGHT_REVIEW",
-          message:
-            copyrightScan.status === "BLOCKED"
-              ? duplicateMessage ||
-                "This upload was blocked because the copyright screening system detected a high-risk match. Please upload material you created or have permission to share."
-              : "This upload needs copyright review before it can be published. Please make sure you have the right or permission to share the material.",
-          copyright: {
-            status: copyrightScan.status,
-            riskScore: copyrightScan.riskScore,
-            reasons: copyrightScan.reasons,
-            webMatchCount: copyrightScan.webMatchCount,
-          },
+      // Screen locally (+ optional web check) before permanent B2 storage.
+      // Per Study2Gate's copyright policy, a risk signal alone never bans
+      // the uploader or silently deletes their work — it only determines
+      // whether the material publishes immediately or goes to the
+      // Copyright Review Queue for an administrator to look at. See
+      // COPYRIGHT_SCREENING.md and services/copyrightScanner.js.
+      let copyrightScan;
+      try {
+        copyrightScan = await scanCopyright({
+          filePath: req.file.path,
+          originalName: req.file.originalname,
+          courseCode: normalizedCourseCode,
         });
+      } catch (scanError) {
+        // A failed screen (extraction crash, DB hiccup) must not silently
+        // delete the file or ban the user — hold it for manual review
+        // instead of guessing.
+        console.error("Copyright scan failed, holding for manual review:", scanError);
+        copyrightScan = {
+          contentHash: null,
+          fingerprint: [],
+          exactDuplicate: null,
+          similarityScore: 0,
+          duplicateOfId: null,
+          risk: "MEDIUM",
+          score: 0,
+          reasons: ["Automated copyright screening failed; held for manual review."],
+          webMatchFound: false,
+          webMatchCount: 0,
+          sourceReferences: [],
+          textWasExtracted: false,
+        };
       }
+
+      // LOW risk -> publish now. MEDIUM/HIGH -> hold (never rejected
+      // outright, never deletes the file, never bans the uploader).
+      const copyrightStatus = copyrightScan.risk === "LOW" ? "CLEARED" : "REVIEW_REQUIRED";
+      const reviewRequired = copyrightStatus !== "CLEARED";
 
       objectKey = createObjectKey(req.file.originalname);
 
@@ -138,7 +157,7 @@ router.post(
         data: {
           title,
           description,
-          courseCode: courseCode ? courseCode.toUpperCase() : null,
+          courseCode: normalizedCourseCode,
           type,
           filename: req.file.originalname,
           filepath: objectKey,
@@ -149,18 +168,46 @@ router.post(
             : req.user.username,
           copyrightConfirmedAt: new Date(),
           copyrightConfirmationVersion: COPYRIGHT_CONFIRMATION_VERSION,
-          copyrightScanStatus: "APPROVED",
-          copyrightRiskScore: copyrightScan.riskScore,
+          // Legacy scan-status fields, kept for back-compat with any
+          // existing reporting built against them.
+          copyrightScanStatus: copyrightScan.risk === "LOW" ? "APPROVED" : copyrightScan.risk === "HIGH" ? "BLOCKED" : "REVIEW",
+          copyrightRiskScore: copyrightScan.score,
           copyrightScanCheckedAt: new Date(),
           contentHash: copyrightScan.contentHash,
+          // Canonical moderation fields.
+          copyrightStatus,
+          copyrightRisk: copyrightScan.risk,
+          copyrightScore: copyrightScan.score,
+          copyrightCheckedAt: new Date(),
+          textFingerprint: copyrightScan.fingerprint || [],
+          similarityScore: copyrightScan.similarityScore || 0,
+          duplicateOfId: copyrightScan.duplicateOfId || null,
+          webMatchFound: Boolean(copyrightScan.webMatchFound),
+          sourceReferences: copyrightScan.sourceReferences?.length
+            ? copyrightScan.sourceReferences
+            : undefined,
+          reviewRequired,
+          reviewReason: reviewRequired ? copyrightScan.reasons.join(" ") : null,
         },
       });
 
       await fs.promises.unlink(req.file.path).catch(() => {});
 
+      if (reviewRequired) {
+        await notifyUploaderOfCopyrightEvent({
+          userId: req.user.id,
+          templateKey: "REVIEW",
+          fileTitle: newFile.title,
+          fileId: newFile.id,
+        }).catch((error) => console.warn("Copyright notify failed:", error.message));
+      }
+
       return res.status(201).json({
         ...newFile,
         uploaderName: req.user.showUsernameOnMaterials ? req.user.username : null,
+        message: reviewRequired
+          ? "Your upload was received and is undergoing copyright review before it becomes publicly visible. You can still see it in My Materials."
+          : undefined,
       });
     } catch (error) {
       await fs.promises.unlink(req.file.path).catch(() => {});
@@ -207,10 +254,16 @@ router.get("/", protect, async (req, res) => {
       },
     });
 
-    const visibleFiles = files.map(({ user, ...file }) => ({
-      ...file,
-      uploaderName: user?.showUsernameOnMaterials ? user.username : null,
-    }));
+    // Backend-enforced visibility: a RESTRICTED/REMOVED/REVIEW_REQUIRED
+    // file never appears in the general listing for anyone except its
+    // uploader and admins — not just hidden by the frontend. See section
+    // 18 (File Access Control) of the copyright spec.
+    const visibleFiles = files
+      .filter((file) => isVisibleToViewer(file, req.user.id, req.user.role))
+      .map(({ user, ...file }) => ({
+        ...file,
+        uploaderName: user?.showUsernameOnMaterials ? user.username : null,
+      }));
 
     res.json(visibleFiles);
   } catch (error) {
@@ -232,6 +285,21 @@ router.get("/download/:id", protect, async (req, res) => {
 
     if (!file) {
       return res.status(404).json({ message: "File not found" });
+    }
+
+    // Enforced server-side regardless of how the request arrives (direct
+    // link, cached frontend state, a Study Circle share, etc.) — see
+    // section 18 of the copyright spec.
+    if (!isVisibleToViewer(file, req.user.id, req.user.role)) {
+      return res.status(403).json({
+        message:
+          file.copyrightStatus === "REMOVED"
+            ? "This material has been removed following a copyright review."
+            : file.copyrightStatus === "RESTRICTED"
+            ? "Access to this material is temporarily restricted while a copyright concern is reviewed."
+            : "This material is not yet available.",
+        code: "COPYRIGHT_ACCESS_BLOCKED",
+      });
     }
 
     // Backward compatibility for files that were stored on Render before B2.
