@@ -674,13 +674,23 @@ export const listSharedFiles = async (req, res) => {
       orderBy: { createdAt: "desc" },
     });
 
+    // Enforce copyright access control here too, not just on the download
+    // endpoint (section 18): a REMOVED file drops out of the shared-files
+    // list entirely; a RESTRICTED one still shows so members know it was
+    // shared, but is flagged unavailable rather than silently downloadable.
+    const isOwnerOrAdmin = (file) => file.uploadedBy === req.user.id || req.user.role === "admin";
+
     return res.json(
-      shares.map((s) => ({
-        shareId: s.id,
-        sharedAt: s.createdAt,
-        sharedByUsername: s.sharedByUser.username,
-        file: s.file,
-      }))
+      shares
+        .filter((s) => s.file.copyrightStatus !== "REMOVED" || isOwnerOrAdmin(s.file))
+        .map((s) => ({
+          shareId: s.id,
+          sharedAt: s.createdAt,
+          sharedByUsername: s.sharedByUser.username,
+          file: s.file,
+          unavailable:
+            !isOwnerOrAdmin(s.file) && !["CLEARED"].includes(s.file.copyrightStatus),
+        }))
     );
   } catch (error) {
     console.error("List shared files error:", error);

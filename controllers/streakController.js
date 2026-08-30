@@ -1,4 +1,5 @@
 import prisma from "../config/prisma.js";
+import { toDateKey, daysBetweenKeys, evaluateStreakStatus } from "../utils/streakStatus.js";
 
 // A "study day" requires completing at least this many flashcards in a
 // single session — either Normal Mode reviews or Test Yourself answers.
@@ -13,14 +14,27 @@ const streakSelect = {
   totalStudyDays: true
 };
 
-// Calendar-day key in UTC, e.g. "2026-08-21". Streaks are tracked by
-// calendar day rather than exact timestamps.
-const toDateKey = (date) => new Intl.DateTimeFormat("en-CA", { timeZone: process.env.APP_TIMEZONE || "Africa/Lagos" }).format(new Date(date));
+// Applies a pending reset (if any) and returns the up-to-date user record
+// plus the status to report alongside it. Shared by getStreak and
+// recordStudySession so both endpoints agree on the current state.
+//
+// This is also a safety net for however long the background job (see
+// services/streakScheduler.js) takes to get to this user — a broken
+// streak is reset here on the very next read/write even if the scheduler
+// hasn't run yet.
+const resolveStreak = async (userId, user, now = new Date()) => {
+  const { status, resetNeeded } = evaluateStreakStatus(user, now);
 
-const daysBetweenKeys = (fromKey, toKey) => {
-  const from = new Date(`${fromKey}T00:00:00Z`);
-  const to = new Date(`${toKey}T00:00:00Z`);
-  return Math.round((to - from) / (24 * 60 * 60 * 1000));
+  if (resetNeeded && user.currentStreak !== 0) {
+    const resetUser = await prisma.user.update({
+      where: { id: userId },
+      data: { currentStreak: 0 },
+      select: streakSelect
+    });
+    return { user: resetUser, status };
+  }
+
+  return { user, status };
 };
 
 const serializeStreak = (user, extra = {}) => ({
@@ -33,18 +47,20 @@ const serializeStreak = (user, extra = {}) => ({
 
 export const getStreak = async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
+    const rawUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: streakSelect
     });
 
-    if (!user) {
+    if (!rawUser) {
       return res.status(404).json({ success: false, message: "User not found." });
     }
 
+    const { user, status } = await resolveStreak(req.user.id, rawUser);
+
     return res.status(200).json({
       success: true,
-      streak: serializeStreak(user)
+      streak: serializeStreak(user, { status })
     });
   } catch (error) {
     console.error("Get streak error:", error);
@@ -70,14 +86,19 @@ export const recordStudySession = async (req, res) => {
       });
     }
 
-    const user = await prisma.user.findUnique({
+    const rawUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: streakSelect
     });
 
-    if (!user) {
+    if (!rawUser) {
       return res.status(404).json({ success: false, message: "User not found." });
     }
+
+    // Resolve any pending reset first, so a not-qualified/duplicate
+    // response below reports the true (already-broken) streak rather than
+    // a stale positive count.
+    const { user } = await resolveStreak(req.user.id, rawUser);
 
     if (completedCount < MIN_CARDS_FOR_STREAK) {
       return res.status(200).json({
@@ -99,7 +120,7 @@ export const recordStudySession = async (req, res) => {
         qualified: true,
         streakUpdated: false,
         alreadyRecorded: true,
-        streak: serializeStreak(user)
+        streak: serializeStreak(user, { status: "safe" })
       });
     }
 
@@ -123,7 +144,7 @@ export const recordStudySession = async (req, res) => {
       qualified: true,
       streakUpdated: true,
       alreadyRecorded: false,
-      streak: serializeStreak(updatedUser)
+      streak: serializeStreak(updatedUser, { status: "safe" })
     });
   } catch (error) {
     console.error("Record study session error:", error);
@@ -133,3 +154,4 @@ export const recordStudySession = async (req, res) => {
     });
   }
 };
+

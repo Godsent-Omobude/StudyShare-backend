@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import prisma from "../config/prisma.js";
+import { deleteFromB2 } from "../services/b2Storage.js";
 
 const safeUser = (user) => ({
   id: user.id,
@@ -9,6 +10,14 @@ const safeUser = (user) => ({
   role: user.role,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
+  // Copyright standing — surfaced so User Management can show/act on it
+  // without requiring the admin to already have one of this user's files
+  // open in the Copyright Review Queue.
+  copyrightWarnings: user.copyrightWarnings,
+  suspendedUntil: user.suspendedUntil,
+  suspendedReason: user.suspendedReason,
+  terminatedAt: user.terminatedAt,
+  terminatedReason: user.terminatedReason,
   _count: user._count
 });
 
@@ -84,6 +93,11 @@ export const getAdminUsers = async (req, res) => {
         role: true,
         createdAt: true,
         updatedAt: true,
+        copyrightWarnings: true,
+        suspendedUntil: true,
+        suspendedReason: true,
+        terminatedAt: true,
+        terminatedReason: true,
         _count: {
           select: {
             files: true,
@@ -183,6 +197,17 @@ export const getAdminFiles = async (req, res) => {
         downloads: true,
         createdAt: true,
         updatedAt: true,
+        copyrightConfirmedAt: true,
+        copyrightConfirmationVersion: true,
+        copyrightScanStatus: true,
+        copyrightRiskScore: true,
+        copyrightScanCheckedAt: true,
+        // Canonical moderation status — the File Management table below
+        // shows this so a hard-delete here isn't done blind to the fact
+        // that the reversible Copyright Review flow may already be
+        // handling this file (see the warning in deleteFile()).
+        copyrightStatus: true,
+        copyrightRisk: true,
         user: {
           select: {
             id: true,
@@ -219,9 +244,12 @@ export const deleteAdminFile = async (req, res) => {
 
     await prisma.file.delete({ where: { id: fileId } });
 
-    // Database deletion is the source of truth. Physical-file deletion is
-    // best-effort so a missing file does not make the admin action fail.
-    if (file.filepath) {
+    // Database deletion is the source of truth. Storage cleanup is
+    // best-effort so a missing/already-gone object does not make the
+    // admin action fail. Most files live in B2 (see routes/files.js
+    // upload handler); only files uploaded before the B2 migration still
+    // have a local "uploads/..." path.
+    if (file.filepath?.startsWith("uploads/")) {
       try {
         await fs.unlink(path.resolve(file.filepath));
       } catch (error) {
@@ -229,6 +257,10 @@ export const deleteAdminFile = async (req, res) => {
           console.warn("Could not remove physical file:", error.message);
         }
       }
+    } else if (file.filepath) {
+      await deleteFromB2(file.filepath).catch((error) => {
+        console.warn("Could not remove B2 object:", error.message);
+      });
     }
 
     res.json({
@@ -289,12 +321,18 @@ export const deleteUser = async (req, res) => {
 
     for (const file of user.files) {
       if (!file.filepath) continue;
-      try {
-        await fs.unlink(path.resolve(file.filepath));
-      } catch (error) {
-        if (error.code !== "ENOENT") {
-          console.warn("Could not remove user file:", error.message);
+      if (file.filepath.startsWith("uploads/")) {
+        try {
+          await fs.unlink(path.resolve(file.filepath));
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            console.warn("Could not remove user file:", error.message);
+          }
         }
+      } else {
+        await deleteFromB2(file.filepath).catch((error) => {
+          console.warn("Could not remove user's B2 object:", error.message);
+        });
       }
     }
 

@@ -10,6 +10,10 @@ import {
   getFromB2,
   deleteFromB2,
 } from "../services/b2Storage.js";
+import {
+  scanCopyright,
+  COPYRIGHT_CONFIRMATION_VERSION,
+} from "../services/copyrightScanner.js";
 
 const router = express.Router();
 
@@ -71,7 +75,14 @@ router.post(
   protect,
   upload.single("file"),
   async (req, res) => {
-    const { title, description, courseCode, type } = req.body;
+    const { title, description, courseCode, type, copyrightConfirmation } = req.body;
+
+    if (copyrightConfirmation !== "true") {
+      return res.status(400).json({
+        message:
+          "You must confirm that you have the right or permission to upload this material.",
+      });
+    }
 
     if (!req.file) {
       return res
@@ -82,6 +93,39 @@ router.post(
     let objectKey = null;
 
     try {
+      // Scan before permanent B2 storage. Suspicious files never become
+      // publicly downloadable.
+      const copyrightScan = await scanCopyright({
+        filePath: req.file.path,
+        originalName: req.file.originalname,
+      });
+
+      if (copyrightScan.status !== "APPROVED") {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+
+        const duplicateMessage = copyrightScan.duplicate
+          ? `An identical file is already available as "${copyrightScan.duplicate.title}".`
+          : null;
+
+        return res.status(422).json({
+          code:
+            copyrightScan.status === "BLOCKED"
+              ? "COPYRIGHT_BLOCKED"
+              : "COPYRIGHT_REVIEW",
+          message:
+            copyrightScan.status === "BLOCKED"
+              ? duplicateMessage ||
+                "This upload was blocked because the copyright screening system detected a high-risk match. Please upload material you created or have permission to share."
+              : "This upload needs copyright review before it can be published. Please make sure you have the right or permission to share the material.",
+          copyright: {
+            status: copyrightScan.status,
+            riskScore: copyrightScan.riskScore,
+            reasons: copyrightScan.reasons,
+            webMatchCount: copyrightScan.webMatchCount,
+          },
+        });
+      }
+
       objectKey = createObjectKey(req.file.originalname);
 
       await uploadToB2({
@@ -103,6 +147,12 @@ router.post(
           uploaderName: req.user.showUsernameOnMaterials === false
             ? "Anonymous"
             : req.user.username,
+          copyrightConfirmedAt: new Date(),
+          copyrightConfirmationVersion: COPYRIGHT_CONFIRMATION_VERSION,
+          copyrightScanStatus: "APPROVED",
+          copyrightRiskScore: copyrightScan.riskScore,
+          copyrightScanCheckedAt: new Date(),
+          contentHash: copyrightScan.contentHash,
         },
       });
 

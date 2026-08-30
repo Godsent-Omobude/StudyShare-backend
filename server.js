@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import helmet from 'helmet';
 import fs from 'fs';
 import authRoutes from './routes/auth.js';
 import fileRoutes from './routes/files.js';
@@ -10,13 +11,23 @@ import adminRoutes from './routes/admin.js';
 import settingsRoutes from './routes/settings.js';
 import circleRoutes from './routes/circles.js';
 import notificationRoutes from './routes/notifications.js';
+import copyrightRoutes from './routes/copyright.js';
 import { attachSocketServer } from './socket.js';
+import { startStreakScheduler } from './services/streakScheduler.js';
 import prisma from './config/prisma.js';
 
 dotenv.config();
 
 const app = express();
 app.set("trust proxy", 1);
+
+// Standard security headers (X-Content-Type-Options, X-Frame-Options,
+// Strict-Transport-Security, a default Content-Security-Policy, etc).
+// This is a pure JSON API (the frontend is a separately hosted SPA), so
+// CSP's directives geared at HTML pages have little to bite on here, but
+// the header is harmless to send and future-proofs against ever serving
+// HTML (e.g. an error page) directly from this server.
+app.use(helmet());
 
 // Only allow the app's own frontend(s) to call this API with credentials.
 // FRONTEND_URL may be a single URL or a comma-separated list (e.g. a
@@ -56,6 +67,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/circles', circleRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/copyright', copyrightRoutes);
 
 const PORT = process.env.PORT || 5000;
 const httpServer = http.createServer(app);
@@ -67,6 +79,9 @@ async function main() {
     await prisma.$connect();
     console.log('PostgreSQL database connected successfully via Prisma ORM.');
     httpServer.listen(PORT, () => console.log(`Study2Gate Platform running on port ${PORT}`));
+    // Keeps streaks accurate (afternoon warning, eventual reset) even
+    // while nobody's actively using the app — see services/streakScheduler.js.
+    startStreakScheduler();
   } catch (e) {
     console.error('Database connection initialization failed:', e);
     await prisma.$disconnect();

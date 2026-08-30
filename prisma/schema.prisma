@@ -55,8 +55,38 @@ model User {
 
   pushRegistrations PushRegistration[]
 
+  // --- Copyright moderation / account enforcement ---
+  // Temporary hold short of full termination. A suspended user can still
+  // log in (so they see why) but protect() blocks everything else while
+  // suspendedUntil is in the future.
+  suspendedAt      DateTime?
+  suspendedUntil   DateTime?
+  suspendedReason  String?
+  // Permanent enforcement action. Distinct from a normal delete so the
+  // account/audit trail survives even though the user can no longer use it.
+  terminatedAt     DateTime?
+  terminatedReason String?
+  copyrightWarnings Int @default(0)
+
+  // --- Copyright Policy acceptance (mandatory, gates login) ---
+  // Null/blank until the user explicitly accepts. copyrightPolicyVersion
+  // records *which* version they agreed to, so a future material update to
+  // the policy can force re-acceptance by bumping CURRENT_COPYRIGHT_POLICY_VERSION
+  // (see backend/utils/legalPolicy.js) without needing a new DB column.
+  copyrightPolicyAcceptedAt DateTime?
+  copyrightPolicyVersion    String?
+
   files     File[]
   flashcardSets FlashcardSet[]
+
+  copyrightReportsFiled    CopyrightReport[]   @relation("ReportComplainant")
+  copyrightReportsReviewed CopyrightReport[]   @relation("ReportReviewer")
+  copyrightDisputesFiled   CopyrightDispute[]  @relation("DisputeUploader")
+  copyrightDisputesReviewed CopyrightDispute[] @relation("DisputeReviewer")
+  copyrightNotesAuthored   CopyrightNote[]     @relation("NoteAuthor")
+  copyrightAuditActions    CopyrightAuditLog[] @relation("AuditAdmin")
+  copyrightAuditTargeted   CopyrightAuditLog[] @relation("AuditTargetUser")
+  filesReviewed            File[]              @relation("FileCopyrightReviewer")
 
   ownedCircles          StudyCircle[]       @relation("CircleOwner")
   circleMemberships     CircleMember[]
@@ -87,6 +117,53 @@ model File {
   mimetype     String
   uploaderName String
   downloads    Int      @default(0)
+
+  // Copyright screening metadata. Extracted document text is never stored.
+  // These are the original upload-time-only fields (kept for backward
+  // compatibility with existing rows/queries).
+  copyrightConfirmedAt DateTime?
+  copyrightConfirmationVersion String?
+  copyrightScanStatus String @default("APPROVED")
+  copyrightRiskScore Int @default(0)
+  copyrightScanCheckedAt DateTime?
+  contentHash String?
+
+  // --- Copyright moderation (full lifecycle) ---
+  // copyrightStatus is the canonical moderation state used by the admin
+  // review queue and access control. copyrightScanStatus above remains as
+  // the raw upload-time scan result for reference/back-compat.
+  // Canonical DB default is CLEARED (see the migration's backfill comment —
+  // existing/unspecified rows should not vanish from publication). Every
+  // real upload path (routes/files.js) sets this field explicitly to the
+  // scanner's resolved status, so this default only matters for a row
+  // created without going through that path.
+  copyrightStatus       CopyrightStatus @default(CLEARED)
+  copyrightRisk         CopyrightRisk?
+  copyrightScore        Int             @default(0)
+  copyrightCheckedAt    DateTime?
+
+  // Near-duplicate detection (MinHash-style signature over shingled,
+  // normalised extracted text — never the raw text itself).
+  textFingerprint       Int[]           @default([])
+  similarityScore       Float           @default(0)
+  duplicateOfId         Int?
+  duplicateOf           File?           @relation("FileDuplicates", fields: [duplicateOfId], references: [id], onDelete: SetNull)
+  duplicates            File[]          @relation("FileDuplicates")
+
+  webMatchFound         Boolean         @default(false)
+  sourceReferences       Json?          // [{ url, domain, phrase }], capped small list
+  reviewRequired         Boolean        @default(false)
+  reviewReason           String?
+  reviewedByUserId        Int?
+  reviewedByUser          User?         @relation("FileCopyrightReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  reviewedAt              DateTime?
+
+  restrictionReason       String?
+  removalReason           String?
+  uploaderNotifiedAt      DateTime?
+  reportCount             Int           @default(0)
+  internalNotesCount      Int           @default(0)
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   
@@ -95,6 +172,198 @@ model File {
   user         User     @relation(fields: [uploadedBy], references: [id], onDelete: Cascade)
 
   circleShares CircleSharedFile[]
+
+  copyrightReports  CopyrightReport[]
+  copyrightDisputes CopyrightDispute[]
+  copyrightNotes    CopyrightNote[]
+
+  @@index([contentHash])
+  @@index([copyrightScanStatus])
+  @@index([copyrightStatus])
+  @@index([copyrightRisk])
+  @@index([duplicateOfId])
+}
+
+enum CopyrightStatus {
+  PENDING
+  CLEARED
+  REVIEW_REQUIRED
+  RESTRICTED
+  REMOVED
+  REJECTED
+}
+
+enum CopyrightRisk {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum CopyrightReportStatus {
+  PENDING
+  UNDER_REVIEW
+  ACTION_TAKEN
+  REJECTED
+  RESOLVED
+  CLOSED
+}
+
+enum CopyrightReportOutcome {
+  LEGITIMATE
+  UNFOUNDED
+  INSUFFICIENT_INFORMATION
+  FALSE_OR_MISLEADING
+}
+
+enum CopyrightDisputeStatus {
+  PENDING
+  UNDER_REVIEW
+  UPHELD
+  RESTORED
+  CLOSED
+}
+
+// How a CopyrightReport (case) came to exist — through the in-app report
+// form, or typed in by an admin for a complaint that arrived elsewhere
+// (email, postal notice, etc).
+enum CopyrightCaseSource {
+  USER_SUBMITTED
+  MANUAL
+}
+
+// A complaint that a specific File infringes someone's copyright — either
+// a user-submitted complaint, or a case an admin created by hand. Not tied
+// 1:1 to a logged-in account — complainantUserId is set only when the
+// reporter was authenticated.
+//
+// fileId is nullable and SetNull-on-delete (not Cascade): a case record is
+// a compliance/audit artifact and must survive the underlying File being
+// removed. fileTitleSnapshot/fileFilenameSnapshot/fileHashSnapshot and the
+// uploader* snapshot fields are captured once at creation time precisely
+// so the case stays fully readable even after the file — or the uploader's
+// account — is gone. uploaderId is a plain int (no FK) for the same reason.
+model CopyrightReport {
+  id         Int                 @id @default(autoincrement())
+  caseNumber String              @unique // e.g. "CR-2026-0001", auto-generated, sequential per year
+  source     CopyrightCaseSource @default(USER_SUBMITTED)
+
+  fileId Int?
+  file   File? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  // Snapshot of the file/uploader at the time the case was opened, so the
+  // record remains meaningful regardless of what later happens to either.
+  fileTitleSnapshot    String
+  fileFilenameSnapshot String
+  fileHashSnapshot     String?
+  uploaderId           Int?
+  uploaderNameSnapshot String?
+  uploaderUsernameSnapshot String?
+
+  complainantUserId Int?
+  complainantUser   User?   @relation("ReportComplainant", fields: [complainantUserId], references: [id], onDelete: SetNull)
+  complainantName   String
+  complainantEmail  String
+  complainantPhone  String?
+
+  copyrightedWork     String
+  infringingLocation  String?
+  explanation         String
+  ownershipEvidence   String?
+  supportingInfo      String?
+  declarationAccepted Boolean @default(false)
+
+  status  CopyrightReportStatus   @default(PENDING)
+  outcome CopyrightReportOutcome?
+  reason  String?
+  decision   String?
+  actionTaken String?
+
+  // Admin-editable case-record fields that the backend has no automatic
+  // way of knowing — e.g. the uploader was notified by email outside the
+  // system, or responded outside the system. Per-case (not on File),
+  // since a single file can have more than one report/case.
+  uploaderNotifiedAt DateTime?
+  uploaderResponse   String?
+
+  reviewedByUserId Int?
+  reviewedByUser   User?     @relation("ReportReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  reviewedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fileId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([caseNumber])
+}
+
+// An uploader's counter-notice against a RESTRICTED/REMOVED file.
+model CopyrightDispute {
+  id     Int  @id @default(autoincrement())
+  fileId Int
+  file   File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  uploaderId Int
+  uploader   User @relation("DisputeUploader", fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  explanation      String
+  ownsWork         Boolean @default(false)
+  hasPermission    Boolean @default(false)
+  otherLawfulBasis String?
+
+  status        CopyrightDisputeStatus @default(PENDING)
+  adminResponse String?
+
+  reviewedByUserId Int?
+  reviewedByUser   User?     @relation("DisputeReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  reviewedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fileId])
+  @@index([uploaderId])
+  @@index([status])
+}
+
+// Internal-only admin reasoning/evidence, never shown to students.
+model CopyrightNote {
+  id     Int  @id @default(autoincrement())
+  fileId Int
+  file   File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  authorId Int
+  author   User @relation("NoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  note      String
+  createdAt DateTime @default(now())
+
+  @@index([fileId, createdAt])
+}
+
+// Immutable trail of every copyright-moderation action. Never editable by
+// ordinary users — only ever inserted into, from admin controllers.
+model CopyrightAuditLog {
+  id      Int  @id @default(autoincrement())
+  adminId Int
+  admin   User @relation("AuditAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+
+  action         String
+  targetFileId   Int?
+  targetUserId   Int?
+  targetUser     User?   @relation("AuditTargetUser", fields: [targetUserId], references: [id], onDelete: SetNull)
+  reportId       Int?
+  disputeId      Int?
+  reason         String?
+  previousStatus String?
+  newStatus      String?
+
+  createdAt DateTime @default(now())
+
+  @@index([targetFileId])
+  @@index([targetUserId])
+  @@index([createdAt])
 }
 
 model FlashcardSet {
