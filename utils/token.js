@@ -24,3 +24,27 @@ export const createAuthToken = (user) =>
     process.env.JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
+
+// Short-lived token issued when login is blocked solely because the user
+// hasn't accepted the current Copyright Policy yet (see /auth/login). It
+// carries no session privileges of its own — it can only be redeemed at
+// /auth/accept-copyright-policy to record acceptance and mint a real auth
+// token. Kept separate from the auth cookie/token so a browser never ends
+// up "logged in" before acceptance is recorded.
+const POLICY_PENDING_EXPIRES_IN = "10m";
+const POLICY_PENDING_PURPOSE = "copyright-policy-pending";
+
+export const createPolicyPendingToken = (user) =>
+  jwt.sign(
+    { id: user.id, purpose: POLICY_PENDING_PURPOSE },
+    process.env.JWT_SECRET,
+    { expiresIn: POLICY_PENDING_EXPIRES_IN }
+  );
+
+export const verifyPolicyPendingToken = (token) => {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  if (decoded?.purpose !== POLICY_PENDING_PURPOSE) {
+    throw new Error("Invalid pending-token purpose.");
+  }
+  return decoded;
+};
