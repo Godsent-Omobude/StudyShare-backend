@@ -107,3 +107,19 @@ export const aiGenerationLimiter = createRateLimiter({
   keyPrefix: "ai-generate",
   message: "Too many flashcard generation requests. Please try again later.",
 });
+
+// Copyright reports and disputes are free-text forms an abusive actor
+// could otherwise spam to harass an uploader or flood the review queue.
+export const copyrightReportLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  keyPrefix: "copyright-report",
+  message: "Too many copyright reports submitted. Please try again later.",
+});
+
+export const copyrightDisputeLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  keyPrefix: "copyright-dispute",
+  message: "Too many disputes submitted. Please try again later.",
+});
