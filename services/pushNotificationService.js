@@ -53,6 +53,14 @@ const NOTIFICATION_TYPE_CONFIG = {
     category: "notifyFlashcardActivity",
     urlFor: () => "/my-flashcards",
   },
+  STREAK_AT_RISK: {
+    category: "notifyFlashcardActivity",
+    urlFor: () => "/",
+  },
+  STREAK_BROKEN: {
+    category: "notifyFlashcardActivity",
+    urlFor: () => "/",
+  },
   ACCOUNT_SECURITY: {
     category: "notifyAccountSecurity",
     urlFor: () => "/settings",
@@ -60,6 +68,10 @@ const NOTIFICATION_TYPE_CONFIG = {
   ANNOUNCEMENT: {
     category: "notifyAnnouncements",
     urlFor: () => "/dashboard",
+  },
+  COPYRIGHT: {
+    category: "notifyAccountSecurity",
+    urlFor: () => "/materials",
   },
 };
 
@@ -146,34 +158,28 @@ export const sendPushForNotification = async (notification) => {
       where: { userId: notification.userId, active: true },
       select: { token: true },
     });
-    if (registrations.length === 0) {
-      console.warn(`[pushNotificationService] No active FCM registration for user ${notification.userId}.`);
-      return;
-    }
+    if (registrations.length === 0) return;
 
     const destinationUrl = config.urlFor(notification);
 
-    // Use a data-only message for Web Push. This gives our Firebase
-    // service worker full control over the notification, avoiding the
-    // duplicate-notification behaviour that can occur when an FCM
-    // notification payload and onBackgroundMessage both display one.
     const message = {
+      notification: {
+        title: notification.title,
+        body: notification.body,
+      },
       data: {
         notificationId: String(notification.id),
         type: notification.type,
-        title: String(notification.title || "Study2Gate"),
-        body: String(notification.body || ""),
         circleId: notification.circleId ? String(notification.circleId) : "",
         url: destinationUrl,
       },
       webpush: {
-        headers: { Urgency: "high" },
+        fcmOptions: { link: destinationUrl },
       },
       tokens: registrations.map((r) => r.token),
     };
 
     const response = await messaging.sendEachForMulticast(message);
-    console.log(`[pushNotificationService] Sent ${notification.type} notification ${notification.id}: ${response.successCount} succeeded, ${response.failureCount} failed.`);
 
     if (response.failureCount > 0) {
       await Promise.all(

@@ -1,5 +1,5 @@
 import { Server } from "socket.io";
-import { getAuthenticatedUser, verifyAccessToken } from "./middleware/auth.js";
+import { getAuthenticatedUserIfTokenValid, verifyAccessToken } from "./middleware/auth.js";
 import { getAuthCookie } from "./utils/cookies.js";
 import { getMembership, canManage, canRemoveMember } from "./services/circleAccess.js";
 import { setIO, circleRoom, userRoom, emitToCircle, createNotification, removeUserFromCircleSockets } from "./services/circleRealtime.js";
@@ -38,17 +38,8 @@ export const attachSocketServer = (httpServer) => {
       if (!token) return next(new Error("Authentication required."));
       const decoded = verifyAccessToken(token);
 
-      const tokenRecord = await prisma.user.findUnique({
-        where: { id: Number(decoded.id) },
-        select: { tokenVersion: true },
-      });
-
-      if (!tokenRecord || (decoded.tokenVersion ?? 0) !== tokenRecord.tokenVersion) {
-        return next(new Error("Session expired. Please log in again."));
-      }
-
-      const user = await getAuthenticatedUser(decoded.id);
-      if (!user) return next(new Error("User not found."));
+      const user = await getAuthenticatedUserIfTokenValid(decoded.id, decoded.tokenVersion);
+      if (!user) return next(new Error("Session expired. Please log in again."));
       socket.user = user;
       return next();
     } catch {

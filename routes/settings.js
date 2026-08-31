@@ -32,7 +32,19 @@ const profileUpload = multer({
   fileFilter: (req, file, cb) => {
     const allowed = [".jpg", ".jpeg", ".png", ".webp"];
     const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, allowed.includes(ext));
+
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      // Previously `cb(null, false)` — that silently drops the file
+      // instead of erroring, so a wrong-type upload and a genuinely
+      // empty submission were indistinguishable by the time the route
+      // handler's `if (!req.file)` check ran; both produced the same
+      // "choose a JPG/PNG/WEBP" message even for someone who *did*
+      // choose a file, just the wrong kind. Erroring here instead lets
+      // the message below be specific to what actually happened.
+      cb(new Error("That file type isn't supported. Please choose a JPG, PNG or WEBP image."));
+    }
   },
 });
 
@@ -237,7 +249,7 @@ router.patch("/notifications", protect, async (req, res) => {
 
 router.post("/profile-picture", protect, profileUpload.single("profilePicture"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ message: "Please choose a JPG, PNG or WEBP image up to 5 MB." });
+    return res.status(400).json({ message: "Please choose an image to upload." });
   }
 
   let newObjectKey = null;

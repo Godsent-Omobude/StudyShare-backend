@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import helmet from 'helmet';
 import fs from 'fs';
+import multer from 'multer';
 import authRoutes from './routes/auth.js';
 import fileRoutes from './routes/files.js';
 import aiRoutes from './routes/ai.js';
@@ -52,6 +53,16 @@ app.use(
 );
 app.use(express.json());
 
+// Deliberately unauthenticated, DB-free, and mounted before any other
+// route: this only answers "is the Node process alive and accepting
+// requests," not "is Postgres also healthy" — a health check tied to a DB
+// query would report the whole app down over a single flaky DB hiccup.
+// Used by the frontend's status banner and by an external uptime monitor
+// (e.g. UptimeRobot) polling from outside this infrastructure.
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads', { recursive: true });
 }
@@ -68,6 +79,43 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/circles', circleRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/copyright', copyrightRoutes);
+
+// Centralized error handler. Errors thrown inside a route's own
+// try/catch never reach this — they're already turned into a JSON
+// response by that route. What lands here are errors raised by
+// *middleware* before a route handler ever runs, most notably multer:
+// a rejected file type (routes/files.js, middleware/upload.js,
+// routes/settings.js all call `cb(new Error(...))` from their
+// fileFilter) or an oversized file (multer's own `limits.fileSize`
+// check, which throws a MulterError). Without a handler here, Express
+// falls back to its default error page — an HTML response — which
+// every frontend `error.response?.data?.message` read then silently
+// fails to parse, collapsing a specific, useful message ("Invalid file
+// type...", a size limit) into a generic fallback like "Upload failed."
+// This restores the specific message as JSON instead.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+
+  if (err instanceof multer.MulterError) {
+    const message =
+      err.code === 'LIMIT_FILE_SIZE'
+        ? 'This file is too large. Please choose a smaller file.'
+        : err.message;
+    return res.status(400).json({ message });
+  }
+
+  if (err instanceof Error) {
+    // Any other middleware-level error (e.g. a rejected file type from a
+    // fileFilter, or the CORS check above). These already carry a
+    // message written for the person using the app, so it's passed
+    // through as-is rather than replaced with something generic.
+    console.error('Request rejected before reaching a route handler:', err.message);
+    return res.status(400).json({ message: err.message });
+  }
+
+  console.error('Unhandled request error:', err);
+  return res.status(500).json({ message: 'Something went wrong. Please try again.' });
+});
 
 const PORT = process.env.PORT || 5000;
 const httpServer = http.createServer(app);

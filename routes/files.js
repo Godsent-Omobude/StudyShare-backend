@@ -242,7 +242,24 @@ router.post(
 
 router.get("/", protect, async (req, res) => {
   try {
+    // Backend-enforced visibility: a RESTRICTED/REMOVED/REVIEW_REQUIRED
+    // file never appears in the general listing for anyone except its
+    // uploader and admins — not just hidden by the frontend. See section
+    // 18 (File Access Control) of the copyright spec.
+    //
+    // This used to be `findMany` with no `where` at all — fetching every
+    // file row (admin-only rows included) and filtering in JS afterwards.
+    // The same isVisibleToViewer rule is applied here as a `where` clause
+    // instead, so the database only ever returns rows the requester is
+    // actually allowed to see, and the query gets cheaper as the table
+    // grows rather than scaling with total files ever uploaded.
+    const visibilityWhere =
+      req.user.role === "admin"
+        ? {}
+        : { OR: [{ copyrightStatus: "CLEARED" }, { uploadedBy: req.user.id }] };
+
     const files = await prisma.file.findMany({
+      where: visibilityWhere,
       orderBy: { createdAt: "desc" },
       include: {
         user: {
@@ -254,20 +271,15 @@ router.get("/", protect, async (req, res) => {
       },
     });
 
-    // Backend-enforced visibility: a RESTRICTED/REMOVED/REVIEW_REQUIRED
-    // file never appears in the general listing for anyone except its
-    // uploader and admins — not just hidden by the frontend. See section
-    // 18 (File Access Control) of the copyright spec.
-    const visibleFiles = files
-      .filter((file) => isVisibleToViewer(file, req.user.id, req.user.role))
-      .map(({ user, ...file }) => ({
-        ...file,
-        uploaderName: user?.showUsernameOnMaterials ? user.username : null,
-      }));
+    const visibleFiles = files.map(({ user, ...file }) => ({
+      ...file,
+      uploaderName: user?.showUsernameOnMaterials ? user.username : null,
+    }));
 
     res.json(visibleFiles);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("List files error:", error);
+    res.status(500).json({ message: "Unable to load materials right now. Please try again." });
   }
 });
 

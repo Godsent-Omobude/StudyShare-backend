@@ -31,6 +31,15 @@ const hashVerificationCode = (code) => crypto.createHash("sha256").update(code).
 
 // Generates a fresh code, stores its hash + expiry on the user, resets the
 // per-user attempt counter, and emails it. Shared by register + resend.
+//
+// The DB write is awaited (the code must be persisted before we tell the
+// caller a code was issued), but the actual email delivery is fired off
+// without awaiting it: it's an HTTP call to a third-party provider (Brevo)
+// and has no bearing on whether this request should complete — the code is
+// already valid and waiting once it's in the database. Awaiting it here
+// previously meant register/resend requests sat on hold for however long
+// Brevo took to answer. Failures are still logged so delivery problems
+// aren't silently swallowed.
 const issueVerificationCode = async (user) => {
   const code = generateVerificationCode();
 
@@ -44,7 +53,9 @@ const issueVerificationCode = async (user) => {
     },
   });
 
-  await sendVerificationEmail({ to: user.email, code });
+  sendVerificationEmail({ to: user.email, code }).catch((error) => {
+    console.error("Verification email failed to send:", error);
+  });
 };
 
 const publicUser = (user) => ({
@@ -305,7 +316,12 @@ router.post("/forgot-password", forgotPasswordLimiter.middleware, async (req, re
     const frontendUrl = String(process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
     const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;
 
-    await sendPasswordResetEmail({ to: user.email, resetUrl });
+    // Fired off rather than awaited — see issueVerificationCode above for
+    // why: the reset token is already persisted, so this request shouldn't
+    // sit on hold for Brevo's response time.
+    sendPasswordResetEmail({ to: user.email, resetUrl }).catch((error) => {
+      console.error("Password reset email failed to send:", error);
+    });
 
     return res.json({ message: genericMessage });
   } catch (error) {

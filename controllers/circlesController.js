@@ -665,8 +665,25 @@ export const listSharedFiles = async (req, res) => {
       return res.status(403).json({ message: "You must be a member to view shared materials." });
     }
 
+    // Enforce copyright access control here too, not just on the download
+    // endpoint (section 18): a REMOVED file drops out of the shared-files
+    // list entirely unless the requester owns it or is an admin. Applied
+    // as a `where` clause (rather than fetched in full and filtered after)
+    // so a circle with a long shared-materials history doesn't mean
+    // pulling rows the requester isn't even allowed to see.
+    const isAdmin = req.user.role === "admin";
     const shares = await prisma.circleSharedFile.findMany({
-      where: { circleId },
+      where: {
+        circleId,
+        ...(isAdmin
+          ? {}
+          : {
+              OR: [
+                { file: { copyrightStatus: { not: "REMOVED" } } },
+                { file: { uploadedBy: req.user.id } },
+              ],
+            }),
+      },
       include: {
         file: true,
         sharedByUser: { select: { username: true } },
@@ -674,23 +691,17 @@ export const listSharedFiles = async (req, res) => {
       orderBy: { createdAt: "desc" },
     });
 
-    // Enforce copyright access control here too, not just on the download
-    // endpoint (section 18): a REMOVED file drops out of the shared-files
-    // list entirely; a RESTRICTED one still shows so members know it was
-    // shared, but is flagged unavailable rather than silently downloadable.
-    const isOwnerOrAdmin = (file) => file.uploadedBy === req.user.id || req.user.role === "admin";
+    const isOwnerOrAdmin = (file) => file.uploadedBy === req.user.id || isAdmin;
 
     return res.json(
-      shares
-        .filter((s) => s.file.copyrightStatus !== "REMOVED" || isOwnerOrAdmin(s.file))
-        .map((s) => ({
-          shareId: s.id,
-          sharedAt: s.createdAt,
-          sharedByUsername: s.sharedByUser.username,
-          file: s.file,
-          unavailable:
-            !isOwnerOrAdmin(s.file) && !["CLEARED"].includes(s.file.copyrightStatus),
-        }))
+      shares.map((s) => ({
+        shareId: s.id,
+        sharedAt: s.createdAt,
+        sharedByUsername: s.sharedByUser.username,
+        file: s.file,
+        unavailable:
+          !isOwnerOrAdmin(s.file) && !["CLEARED"].includes(s.file.copyrightStatus),
+      }))
     );
   } catch (error) {
     console.error("List shared files error:", error);

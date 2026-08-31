@@ -1,86 +1,20 @@
-import { GoogleGenAI } from "@google/genai";
+import ai from "../config/gemini.js";
+import { generateFlashcards as generateFlashcardsWithFallback } from "./ai/aiProviderManager.js";
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
-});
-
+// Kept as the default export: controllers/flashcardsController.js still
+// imports this directly for evaluateFlashcardAnswer's Gemini-based fuzzy
+// grading, which is unrelated to flashcard generation and intentionally
+// untouched. Previously this file created its own separate GoogleGenAI
+// instance; it now reuses the one already exported by config/gemini.js
+// (same behaviour, one fewer duplicate client).
 export default ai;
 
-export const generateFlashcards = async (
-  documentText,
-  count,
-  difficulty
-) => {
-  if (!documentText || documentText.trim() === "") {
-    throw new Error("Document contains no readable text.");
-  }
-
-  const prompt = `
-You are an expert medical tutor.
-
-Generate exactly ${count} flashcards from the supplied document.
-
-Difficulty: ${difficulty}
-
-Rules:
-- Use ONLY information contained in the supplied document.
-- Do NOT invent or add outside facts.
-- Match the selected difficulty level.
-- The front must contain a question or important concept.
-- The back must contain a concise and accurate answer or explanation.
-- Avoid duplicate questions.
-- Focus on understanding, important facts, mechanisms, definitions, relationships, and applications where appropriate.
-- Return ONLY valid JSON.
-- Do NOT use markdown.
-- Do NOT include code fences.
-- Do NOT include any text outside the JSON.
-
-Return exactly this structure:
-
-[
-  {
-    "front": "Question or Concept",
-    "back": "Answer or Explanation"
-  }
-]
-
-DOCUMENT:
-
-${documentText}
-`;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt
-    });
-
-    const output = response.text?.trim();
-
-    if (!output) {
-      throw new Error("Gemini returned an empty response.");
-    }
-
-    // Remove accidental markdown code fences if Gemini adds them.
-    const cleanedOutput = output
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    const flashcards = JSON.parse(cleanedOutput);
-
-    if (!Array.isArray(flashcards)) {
-      throw new Error("Gemini returned an invalid flashcard format.");
-    }
-
-    return flashcards;
-
-  } catch (error) {
-    console.error("Gemini flashcard generation error:", error);
-
-    throw new Error(
-      error?.message || "Unable to generate flashcards."
-    );
-  }
+// Public interface is unchanged: same signature, same return shape
+// (array of { front, back }), same thrown-Error-on-failure contract.
+// Internally this now runs document chunking (for large documents) and
+// tries Gemini, then Groq, then OpenRouter as needed — see
+// services/ai/aiProviderManager.js for the orchestration and
+// services/ai/*Provider.js for each provider's implementation.
+export const generateFlashcards = async (documentText, count, difficulty) => {
+  return generateFlashcardsWithFallback(documentText, count, difficulty);
 };
