@@ -140,6 +140,11 @@ model File {
   copyrightStatus       CopyrightStatus @default(CLEARED)
   copyrightRisk         CopyrightRisk?
   copyrightScore        Int             @default(0)
+  // True only when the automated scan itself crashed (extraction error, DB
+  // hiccup, etc) and the file was held for manual review without ever being
+  // scored. Lets the admin UI show "scan failed" instead of a numeric score,
+  // which would otherwise look identical to a genuine 0/100 (no risk found).
+  copyrightScanFailed   Boolean         @default(false)
   copyrightCheckedAt    DateTime?
 
   // Near-duplicate detection (MinHash-style signature over shingled,

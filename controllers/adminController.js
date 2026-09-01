@@ -244,28 +244,37 @@ export const deleteAdminFile = async (req, res) => {
 
     await prisma.file.delete({ where: { id: fileId } });
 
-    // Database deletion is the source of truth. Storage cleanup is
-    // best-effort so a missing/already-gone object does not make the
-    // admin action fail. Most files live in B2 (see routes/files.js
-    // upload handler); only files uploaded before the B2 migration still
-    // have a local "uploads/..." path.
+    // Database deletion is the source of truth — it always proceeds even if
+    // storage cleanup below fails, so a missing/already-gone object never
+    // blocks the admin action. But a storage failure is reported back to the
+    // caller (not just logged) so an admin doesn't see "deleted successfully"
+    // for a file that's actually still sitting in B2. Most files live in B2
+    // (see routes/files.js upload handler); only files uploaded before the
+    // B2 migration still have a local "uploads/..." path.
+    let storageWarning = null;
+
     if (file.filepath?.startsWith("uploads/")) {
       try {
         await fs.unlink(path.resolve(file.filepath));
       } catch (error) {
         if (error.code !== "ENOENT") {
           console.warn("Could not remove physical file:", error.message);
+          storageWarning = "The database record was deleted, but the local file could not be removed. It may need manual cleanup.";
         }
       }
     } else if (file.filepath) {
       await deleteFromB2(file.filepath).catch((error) => {
         console.warn("Could not remove B2 object:", error.message);
+        storageWarning = `The database record was deleted, but the file in storage could not be removed (${error.message || "unknown error"}). It may still be accessible in B2 and will need manual cleanup.`;
       });
     }
 
     res.json({
       success: true,
-      message: "File deleted successfully."
+      message: storageWarning
+        ? "File record deleted, but storage cleanup failed. See warning."
+        : "File deleted successfully.",
+      warning: storageWarning
     });
   } catch (error) {
     console.error("Admin delete file error:", error);

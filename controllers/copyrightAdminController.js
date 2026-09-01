@@ -58,6 +58,7 @@ const FILE_SUMMARY_SELECT = {
   copyrightStatus: true,
   copyrightRisk: true,
   copyrightScore: true,
+  copyrightScanFailed: true,
   copyrightCheckedAt: true,
   similarityScore: true,
   duplicateOfId: true,
