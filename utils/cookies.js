@@ -4,18 +4,23 @@
 
 const AUTH_COOKIE_NAME = "token";
 
-// Frontend and backend are on different domains (Vercel + Render), so this
-// is a cross-site cookie: SameSite=None + Secure is required for the
-// browser to send it at all. That combination only works over HTTPS, so it
-// only applies in production — locally (http://localhost) it falls back to
-// Lax so cookie-based login still works in dev.
+// REST calls now go through the frontend's own domain (see
+// frontend/vercel.json, which proxies /api to Render), so for those the
+// cookie is same-origin as far as the browser is concerned. But the
+// Socket.IO connection (socket.js) still connects to Render directly and
+// depends on this same cookie riding along cross-site — so SameSite=None
+// still has to stay in production, or that direct connection breaks on
+// every browser, not just Safari. None also still permits it on the now
+// same-origin REST calls (None is the most permissive value), so this is
+// safe for both. Secure only applies in production (requires HTTPS); it
+// falls back to Lax locally (http://localhost) so cookie-based login still
+// works in dev.
 const isProduction = process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
 
 const cookieOptions = () => ({
   httpOnly: true,
   secure: isProduction,
   sameSite: isProduction ? "none" : "lax",
-    path: "/",
   path: "/",
 });
 
