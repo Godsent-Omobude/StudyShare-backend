@@ -93,10 +93,15 @@ export const sendVerificationEmail = async ({ to, code }) => {
 // restriction, removal, restoration, information requests, warnings). Kept
 // deliberately generic — the specific wording lives in copyrightNotify.js
 // so every copyright email goes through one visual template.
+//
+// Routed through a SECOND, separate Brevo account (its own API key/sender)
+// so this high-volume, best-effort notification stream has its own daily
+// quota and doesn't compete with the primary Brevo account, which is
+// reserved for password reset / verification emails.
 export const sendCopyrightNotificationEmail = async ({ to, subject, heading, message }) => {
-  const apiKey = process.env.BREVO_API_KEY;
-  const senderEmail = process.env.BREVO_SENDER_EMAIL;
-  const senderName = process.env.BREVO_SENDER_NAME || "Study2Gate";
+  const apiKey = process.env.BREVO_REVIEW_API_KEY;
+  const senderEmail = process.env.BREVO_REVIEW_SENDER_EMAIL;
+  const senderName = process.env.BREVO_REVIEW_SENDER_NAME || "Study2Gate";
 
   if (!apiKey || !senderEmail) {
     if (process.env.NODE_ENV !== "production") {
@@ -136,7 +141,7 @@ export const sendCopyrightNotificationEmail = async ({ to, subject, heading, mes
 
   if (!response.ok) {
     const details = await response.text();
-    console.error("Brevo error:", details);
+    console.error("Brevo (review account) error:", details);
     // Do not throw — see note above.
   }
 };
