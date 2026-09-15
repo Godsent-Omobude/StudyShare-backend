@@ -40,6 +40,14 @@ model User {
   // against it and re-rolled on the rare collision — no AI involved.
   lastShuffleHash String?
 
+  // --- Download credits ---
+  // Earned by uploading documents (+2 per successful UPLOAD, see
+  // routes/files.js), spent 1-per-download. The database column is the
+  // single source of truth — never trust a client-supplied balance. Always
+  // mutate this via an atomic, conditional update (see the download route)
+  // so concurrent requests can't push it negative.
+  downloadCredits Int @default(0)
+
   // --- Push notifications (Firebase Cloud Messaging) ---
   // Per-category opt-in/out. Read by pushNotificationService before it
   // ever sends a push for a given notification type — a category set to
@@ -112,9 +120,26 @@ model File {
   description  String?
   courseCode   String?
   type         String   // 'Material' or 'Past Question'
-  filename     String
-  filepath     String
-  mimetype     String
+
+  // --- Resource source -----------------------------------------------
+  // 'UPLOAD' (default, back-compat with every pre-existing row) means the
+  // file itself is hosted by Study2Gate (B2) and the fields below are
+  // populated. 'EXTERNAL_LINK' means Study2Gate is only cataloguing a
+  // resource that already lives elsewhere (e.g. a Nigerian university's own
+  // site) — no file is stored, and externalUrl/externalDomain are used
+  // instead. filename/filepath/mimetype are only required at the
+  // application layer for UPLOAD; they stay nullable in the schema so an
+  // EXTERNAL_LINK row can omit them without a migration ever touching
+  // existing UPLOAD rows (which already have them populated).
+  sourceType   String   @default("UPLOAD") // 'UPLOAD' | 'EXTERNAL_LINK'
+  externalUrl      String?
+  // Hostname only (e.g. "nou.edu.ng"), derived server-side from
+  // externalUrl at submission time so the UI never has to re-parse it.
+  externalDomain   String?
+
+  filename     String?
+  filepath     String?
+  mimetype     String?
   uploaderName String
   downloads    Int      @default(0)
 
@@ -187,6 +212,7 @@ model File {
   @@index([copyrightStatus])
   @@index([copyrightRisk])
   @@index([duplicateOfId])
+  @@index([sourceType])
 }
 
 enum CopyrightStatus {

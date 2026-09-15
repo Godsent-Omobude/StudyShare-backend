@@ -109,5 +109,33 @@ export const notifyUploaderOfCopyrightEvent = async ({
     console.warn("Copyright notification email failed:", error.message);
   }
 
+  // Also alert the admin the moment a file lands in review, so moderation
+  // isn't waiting on someone to notice it in the dashboard. Same Brevo
+  // review account/API as the uploader email above — just a second
+  // recipient, so it doesn't cost an extra provider or quota to set up.
+  if (templateKey === "REVIEW") {
+    const adminEmail = process.env.ADMIN_REVIEW_EMAIL;
+    if (!adminEmail) {
+      // Previously this branch was silently skipped — a missing
+      // ADMIN_REVIEW_EMAIL produced zero log output anywhere, making a
+      // "why didn't I get an email" report impossible to diagnose from
+      // the logs alone. Always leave a trace now.
+      console.warn(
+        "Admin review notification skipped: ADMIN_REVIEW_EMAIL is not set."
+      );
+    } else {
+      try {
+        await sendCopyrightNotificationEmail({
+          to: adminEmail,
+          subject: `Study2Gate — New upload awaiting review: "${fileTitle}"`,
+          heading: "New upload awaiting copyright review",
+          message: `"${fileTitle}" (file ID: ${fileId || "n/a"}) was just flagged and is awaiting review.`,
+        });
+      } catch (error) {
+        console.warn("Admin review notification email failed:", error.message);
+      }
+    }
+  }
+
   return notification;
 };

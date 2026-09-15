@@ -98,7 +98,7 @@ const calculateRisk = ({ text, webMatches, exactDuplicate }) => {
   if (exactDuplicate) {
     return {
       score: 100,
-      status: "BLOCKED",
+      risk: "HIGH",
       reasons: ["An identical file has already been uploaded to Study2Gate."],
     };
   }
@@ -153,11 +153,14 @@ const calculateRisk = ({ text, webMatches, exactDuplicate }) => {
     );
   }
 
-  let status = "APPROVED";
-  if (score >= 60) status = "BLOCKED";
-  else if (score >= 35) status = "REVIEW";
+  // Matches the CopyrightRisk enum (LOW/MEDIUM/HIGH) in schema.prisma —
+  // this is what routes/files.js and the admin review queue filter/sort
+  // on, so the vocabulary here has to line up with theirs exactly.
+  let risk = "LOW";
+  if (score >= 60) risk = "HIGH";
+  else if (score >= 35) risk = "MEDIUM";
 
-  return { score, status, reasons };
+  return { score, risk, reasons };
 };
 
 export const scanCopyright = async ({ filePath, originalName }) => {
@@ -213,8 +216,8 @@ export const scanCopyright = async ({ filePath, originalName }) => {
     confirmationVersion: COPYRIGHT_CONFIRMATION_VERSION,
     contentHash,
     duplicate,
-    status: risk.status,
-    riskScore: risk.score,
+    risk: risk.risk,
+    score: risk.score,
     reasons: risk.reasons,
     webSearchConfigured,
     webMatchCount: webMatches.length,

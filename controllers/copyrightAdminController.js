@@ -48,6 +48,9 @@ const FILE_SUMMARY_SELECT = {
   description: true,
   courseCode: true,
   type: true,
+  sourceType: true,
+  externalUrl: true,
+  externalDomain: true,
   filename: true,
   mimetype: true,
   downloads: true,
@@ -111,6 +114,12 @@ export const getCopyrightQueue = async (req, res) => {
         break;
       case "repeat":
         where.user = { copyrightWarnings: { gt: 0 } };
+        break;
+      case "external":
+        where.sourceType = "EXTERNAL_LINK";
+        break;
+      case "uploaded":
+        where.sourceType = "UPLOAD";
         break;
       case "all":
       default:
@@ -531,7 +540,15 @@ export const createManualCopyrightCase = async (req, res) => {
 
     const file = await prisma.file.findUnique({
       where: { id: fileIdNum },
-      select: { id: true, title: true, filename: true, contentHash: true, uploadedBy: true, uploaderName: true },
+      select: {
+        id: true,
+        title: true,
+        filename: true,
+        contentHash: true,
+        uploadedBy: true,
+        uploaderName: true,
+        externalUrl: true,
+      },
     });
     if (!file) return res.status(404).json({ message: "File not found." });
 
@@ -556,7 +573,7 @@ export const createManualCopyrightCase = async (req, res) => {
       fileId: fileIdNum,
       source: "MANUAL",
       fileTitleSnapshot: file.title,
-      fileFilenameSnapshot: file.filename,
+      fileFilenameSnapshot: file.filename || file.externalUrl || "External resource",
       fileHashSnapshot: file.contentHash,
       uploaderId: file.uploadedBy,
       uploaderNameSnapshot: file.uploaderName || null,

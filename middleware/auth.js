@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import prisma from '../config/prisma.js';
 import { getAuthCookie, setAuthCookie } from '../utils/cookies.js';
+import { createAuthToken } from '../utils/token.js';
 import { hasAcceptedCurrentCopyrightPolicy } from '../utils/legalPolicy.js';
 
 export const verifyAccessToken = (token) => jwt.verify(token, process.env.JWT_SECRET);
@@ -10,6 +11,7 @@ const AUTH_USER_SELECT = {
   profilePicture: true, showUsernameOnMaterials: true, theme: true, accentColor: true, role: true,
   terminatedAt: true, suspendedUntil: true, suspendedReason: true,
   copyrightPolicyAcceptedAt: true, copyrightPolicyVersion: true,
+  downloadCredits: true,
 };
 
 export const getAuthenticatedUser = async (userId) => prisma.user.findUnique({
@@ -55,6 +57,16 @@ export const protect = async (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ message: 'Session expired. Please log in again.' });
     }
+
+    // This is what actually makes the 15-minute cookie an *idle* timeout
+    // rather than a hard 15-minutes-since-login cap: every authenticated
+    // request re-mints the cookie with a fresh 15-minute maxAge (see
+    // utils/cookies.js / utils/token.js). Without this, the cookie's
+    // expiry is fixed at whichever moment last called setAuthCookie
+    // (login, a password change, etc.) and activity in between doesn't
+    // extend it — an active user gets logged out on a fixed clock instead
+    // of only after real inactivity.
+    setAuthCookie(res, createAuthToken({ ...req.user, tokenVersion: decoded.tokenVersion }));
 
     // Account-level copyright enforcement (see CopyrightAuditLog / admin
     // copyright actions). Checked on every request, not just login, so a

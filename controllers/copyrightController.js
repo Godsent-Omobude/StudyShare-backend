@@ -39,7 +39,16 @@ export const submitCopyrightReport = async (req, res) => {
 
     const file = await prisma.file.findUnique({
       where: { id: fileId },
-      select: { id: true, title: true, filename: true, contentHash: true, uploadedBy: true, uploaderName: true },
+      select: {
+        id: true,
+        title: true,
+        filename: true,
+        contentHash: true,
+        uploadedBy: true,
+        uploaderName: true,
+        sourceType: true,
+        externalUrl: true,
+      },
     });
     if (!file) return res.status(404).json({ message: "File not found." });
 
@@ -51,7 +60,9 @@ export const submitCopyrightReport = async (req, res) => {
       fileId,
       source: "USER_SUBMITTED",
       fileTitleSnapshot: file.title,
-      fileFilenameSnapshot: file.filename,
+      // fileFilenameSnapshot is a required column — an EXTERNAL_LINK
+      // resource has no filename, so fall back to the URL it points at.
+      fileFilenameSnapshot: file.filename || file.externalUrl || "External resource",
       fileHashSnapshot: file.contentHash,
       uploaderId: file.uploadedBy,
       uploaderNameSnapshot: file.uploaderName || null,

@@ -70,6 +70,7 @@ const publicUser = (user) => ({
   theme: user.theme,
   accentColor: user.accentColor,
   copyrightPolicyAccepted: hasAcceptedCurrentCopyrightPolicy(user),
+  downloadCredits: user.downloadCredits,
 });
 
 const createToken = (user) => createAuthToken(user);

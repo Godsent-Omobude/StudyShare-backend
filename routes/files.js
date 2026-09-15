@@ -15,6 +15,20 @@ import {
   COPYRIGHT_CONFIRMATION_VERSION,
 } from "../services/copyrightScanner.js";
 import { notifyUploaderOfCopyrightEvent } from "../services/copyrightNotify.js";
+import { validateExternalUrl } from "../utils/urlValidation.js";
+
+const SOURCE_TYPES = ["UPLOAD", "EXTERNAL_LINK"];
+
+// --- Download Credit System -------------------------------------------
+// Every successfully uploaded document (sourceType UPLOAD — an
+// EXTERNAL_LINK isn't a document Study2Gate hosts, so it doesn't earn
+// credits) awards this many download credits. Downloading a document
+// spends 1. The balance lives on User.downloadCredits and is always
+// mutated through an atomic, conditional database update — never trusted
+// from the client — so it stays correct across concurrent requests,
+// devices, and sessions. See migrations/20260911110000_add_download_credits.
+const CREDITS_PER_UPLOAD = 2;
+const DOWNLOAD_CREDIT_COST = 1;
 
 const router = express.Router();
 
@@ -87,23 +101,99 @@ router.post(
   protect,
   upload.single("file"),
   async (req, res) => {
-    const { title, description, courseCode, type, copyrightConfirmation } = req.body;
+    const {
+      title,
+      description,
+      courseCode,
+      type,
+      copyrightConfirmation,
+      externalUrl,
+    } = req.body;
+
+    // Back-compat: requests from before this feature existed never sent
+    // sourceType at all, and must keep behaving exactly as an UPLOAD.
+    const sourceType = SOURCE_TYPES.includes(req.body.sourceType)
+      ? req.body.sourceType
+      : "UPLOAD";
 
     if (copyrightConfirmation !== "true") {
       return res.status(400).json({
         message:
-          "You must confirm that you have the right or permission to upload this material.",
+          "You must confirm that you have the right or permission to share this material.",
       });
     }
 
-    if (!req.file) {
+    // Reject inconsistent combinations up front rather than silently
+    // ignoring one side of the request.
+    if (sourceType === "EXTERNAL_LINK" && req.file) {
+      return res.status(400).json({
+        message: "External resources cannot be uploaded as files.",
+      });
+    }
+
+    if (sourceType === "UPLOAD" && !req.file) {
       return res
         .status(400)
         .json({ message: "Please upload a physical file." });
     }
 
-    let objectKey = null;
     const normalizedCourseCode = courseCode ? courseCode.toUpperCase() : null;
+
+    // --- External resource link -----------------------------------------
+    // No file involved at all: Study2Gate only stores and links to the
+    // URL, never fetches, proxies, or executes anything from it. Since
+    // there's no file content to run the copyright/duplicate scanner
+    // against, external resources publish immediately as CLEARED — the
+    // same admin moderation tools (restrict/remove) used for uploaded
+    // files remain available if a link turns out to be inappropriate.
+    if (sourceType === "EXTERNAL_LINK") {
+      let normalizedUrl;
+      let domain;
+      try {
+        ({ normalizedUrl, domain } = validateExternalUrl(externalUrl));
+      } catch (validationError) {
+        return res.status(400).json({ message: validationError.message });
+      }
+
+      try {
+        const newFile = await prisma.file.create({
+          data: {
+            title,
+            description,
+            courseCode: normalizedCourseCode,
+            type,
+            sourceType: "EXTERNAL_LINK",
+            externalUrl: normalizedUrl,
+            externalDomain: domain,
+            uploadedBy: req.user.id,
+            uploaderName:
+              req.user.showUsernameOnMaterials === false
+                ? "Anonymous"
+                : req.user.username,
+            copyrightConfirmedAt: new Date(),
+            copyrightConfirmationVersion: COPYRIGHT_CONFIRMATION_VERSION,
+            copyrightScanStatus: "APPROVED",
+            copyrightStatus: "CLEARED",
+            reviewRequired: false,
+          },
+        });
+
+        return res.status(201).json({
+          ...newFile,
+          uploaderName: req.user.showUsernameOnMaterials
+            ? req.user.username
+            : null,
+        });
+      } catch (error) {
+        console.error("External resource creation error:", error);
+        return res.status(500).json({
+          message: "Unable to save this resource right now. Please try again.",
+        });
+      }
+    }
+
+    // --- Uploaded file -----------------------------------------------------
+    let objectKey = null;
 
     try {
       // Screen locally (+ optional web check) before permanent B2 storage.
@@ -154,44 +244,58 @@ router.post(
         contentType: req.file.mimetype,
       });
 
-      const newFile = await prisma.file.create({
-        data: {
-          title,
-          description,
-          courseCode: normalizedCourseCode,
-          type,
-          filename: req.file.originalname,
-          filepath: objectKey,
-          mimetype: req.file.mimetype,
-          uploadedBy: req.user.id,
-          uploaderName: req.user.showUsernameOnMaterials === false
-            ? "Anonymous"
-            : req.user.username,
-          copyrightConfirmedAt: new Date(),
-          copyrightConfirmationVersion: COPYRIGHT_CONFIRMATION_VERSION,
-          // Legacy scan-status fields, kept for back-compat with any
-          // existing reporting built against them.
-          copyrightScanStatus: copyrightScan.risk === "LOW" ? "APPROVED" : copyrightScan.risk === "HIGH" ? "BLOCKED" : "REVIEW",
-          copyrightRiskScore: copyrightScan.score,
-          copyrightScanCheckedAt: new Date(),
-          contentHash: copyrightScan.contentHash,
-          // Canonical moderation fields.
-          copyrightStatus,
-          copyrightRisk: copyrightScan.risk,
-          copyrightScore: copyrightScan.score,
-          copyrightScanFailed: Boolean(copyrightScan.scanFailed),
-          copyrightCheckedAt: new Date(),
-          textFingerprint: copyrightScan.fingerprint || [],
-          similarityScore: copyrightScan.similarityScore || 0,
-          duplicateOfId: copyrightScan.duplicateOfId || null,
-          webMatchFound: Boolean(copyrightScan.webMatchFound),
-          sourceReferences: copyrightScan.sourceReferences?.length
-            ? copyrightScan.sourceReferences
-            : undefined,
-          reviewRequired,
-          reviewReason: reviewRequired ? copyrightScan.reasons.join(" ") : null,
-        },
-      });
+      // The File row and the +2 download-credit award are created together
+      // in one transaction: a successful upload (this is what "successful"
+      // means here — the record is persisted, independent of whether it's
+      // CLEARED or held for copyright review) always earns credits, and a
+      // failed one (an error below rolls back before this point is
+      // reached, or throws) never does.
+      const [newFile, creditedUser] = await prisma.$transaction([
+        prisma.file.create({
+          data: {
+            title,
+            description,
+            courseCode: normalizedCourseCode,
+            type,
+            sourceType: "UPLOAD",
+            filename: req.file.originalname,
+            filepath: objectKey,
+            mimetype: req.file.mimetype,
+            uploadedBy: req.user.id,
+            uploaderName: req.user.showUsernameOnMaterials === false
+              ? "Anonymous"
+              : req.user.username,
+            copyrightConfirmedAt: new Date(),
+            copyrightConfirmationVersion: COPYRIGHT_CONFIRMATION_VERSION,
+            // Legacy scan-status fields, kept for back-compat with any
+            // existing reporting built against them.
+            copyrightScanStatus: copyrightScan.risk === "LOW" ? "APPROVED" : copyrightScan.risk === "HIGH" ? "BLOCKED" : "REVIEW",
+            copyrightRiskScore: copyrightScan.score,
+            copyrightScanCheckedAt: new Date(),
+            contentHash: copyrightScan.contentHash,
+            // Canonical moderation fields.
+            copyrightStatus,
+            copyrightRisk: copyrightScan.risk,
+            copyrightScore: copyrightScan.score,
+            copyrightScanFailed: Boolean(copyrightScan.scanFailed),
+            copyrightCheckedAt: new Date(),
+            textFingerprint: copyrightScan.fingerprint || [],
+            similarityScore: copyrightScan.similarityScore || 0,
+            duplicateOfId: copyrightScan.duplicateOfId || null,
+            webMatchFound: Boolean(copyrightScan.webMatchFound),
+            sourceReferences: copyrightScan.sourceReferences?.length
+              ? copyrightScan.sourceReferences
+              : undefined,
+            reviewRequired,
+            reviewReason: reviewRequired ? copyrightScan.reasons.join(" ") : null,
+          },
+        }),
+        prisma.user.update({
+          where: { id: req.user.id },
+          data: { downloadCredits: { increment: CREDITS_PER_UPLOAD } },
+          select: { downloadCredits: true },
+        }),
+      ]);
 
       await fs.promises.unlink(req.file.path).catch(() => {});
 
@@ -207,6 +311,8 @@ router.post(
       return res.status(201).json({
         ...newFile,
         uploaderName: req.user.showUsernameOnMaterials ? req.user.username : null,
+        downloadCredits: creditedUser.downloadCredits,
+        creditsAwarded: CREDITS_PER_UPLOAD,
         message: reviewRequired
           ? "Your upload was received and is undergoing copyright review before it becomes publicly visible. You can still see it in My Materials."
           : undefined,
@@ -301,6 +407,13 @@ router.get("/download/:id", protect, async (req, res) => {
       return res.status(404).json({ message: "File not found" });
     }
 
+    if (file.sourceType === "EXTERNAL_LINK") {
+      return res.status(400).json({
+        message:
+          "This is an external resource — open it at its original source instead of downloading it from Study2Gate.",
+      });
+    }
+
     // Enforced server-side regardless of how the request arrives (direct
     // link, cached frontend state, a Study Circle share, etc.) — see
     // section 18 of the copyright spec.
@@ -316,6 +429,59 @@ router.get("/download/:id", protect, async (req, res) => {
       });
     }
 
+    // --- Download credits --------------------------------------------
+    // Admins bypass the credit system entirely — this mirrors the existing
+    // admin bypass in isVisibleToViewer above (e.g. retrieving a file for
+    // copyright review isn't "a user downloading study material").
+    const isAdmin = req.user.role === "admin";
+    let creditSpent = false;
+
+    if (!isAdmin) {
+      // Atomic, DB-enforced check-and-spend: this only decrements when the
+      // balance is currently above 0, in the same database operation as
+      // the check, so two concurrent download requests (or a client
+      // racing the request) can never drive the balance negative — the
+      // database is the sole source of truth, not anything the client
+      // sends.
+      const spend = await prisma.user.updateMany({
+        where: { id: req.user.id, downloadCredits: { gt: 0 } },
+        data: { downloadCredits: { decrement: DOWNLOAD_CREDIT_COST } },
+      });
+
+      if (spend.count === 0) {
+        return res.status(402).json({
+          message: "You're out of download credits.",
+          code: "INSUFFICIENT_CREDITS",
+        });
+      }
+      creditSpent = true;
+    }
+
+    // If anything below fails before the file is actually handed to the
+    // user, the spent credit is handed back — a failed download must never
+    // cost a credit.
+    const refundSpentCredit = async () => {
+      if (!creditSpent) return;
+      creditSpent = false;
+      await prisma.user
+        .update({
+          where: { id: req.user.id },
+          data: { downloadCredits: { increment: DOWNLOAD_CREDIT_COST } },
+        })
+        .catch((refundError) =>
+          console.error("Download credit refund failed:", refundError)
+        );
+    };
+
+    const currentCredits = async () => {
+      if (isAdmin) return null;
+      const record = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { downloadCredits: true },
+      });
+      return record?.downloadCredits ?? null;
+    };
+
     // Backward compatibility for files that were stored on Render before B2.
     if (file.filepath.startsWith("uploads/") && fs.existsSync(file.filepath)) {
       await prisma.file.update({
@@ -323,18 +489,32 @@ router.get("/download/:id", protect, async (req, res) => {
         data: { downloads: { increment: 1 } },
       });
 
+      const remaining = await currentCredits();
+      if (remaining !== null) res.setHeader("X-Download-Credits", String(remaining));
+
       return res.download(
         file.filepath,
-        file.title + path.extname(file.filename)
+        file.title + path.extname(file.filename),
+        (downloadError) => {
+          if (downloadError) refundSpentCredit();
+        }
       );
     }
 
-    const b2File = await getFromB2(file.filepath);
+    let b2File;
+    try {
+      b2File = await getFromB2(file.filepath);
+    } catch (fetchError) {
+      await refundSpentCredit();
+      throw fetchError;
+    }
 
     await prisma.file.update({
       where: { id: fileId },
       data: { downloads: { increment: 1 } },
     });
+
+    const remaining = await currentCredits();
 
     res.setHeader(
       "Content-Type",
@@ -346,6 +526,12 @@ router.get("/download/:id", protect, async (req, res) => {
         file.title + path.extname(file.filename)
       )}`
     );
+    if (remaining !== null) res.setHeader("X-Download-Credits", String(remaining));
+    // The Content-Disposition/X-Download-Credits headers above aren't
+    // reachable by JS on a cross-origin response unless explicitly
+    // exposed — the frontend reads X-Download-Credits after every
+    // download to keep the Navbar balance in sync.
+    res.setHeader("Access-Control-Expose-Headers", "X-Download-Credits");
 
     if (b2File.ContentLength !== undefined) {
       res.setHeader("Content-Length", b2File.ContentLength);
