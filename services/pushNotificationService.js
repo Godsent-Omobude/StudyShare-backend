@@ -112,6 +112,29 @@ export const getPushStatus = async (userId) => {
   return { activeDeviceCount: activeCount, hasActiveDevice: activeCount > 0 };
 };
 
+// Full device list for Settings → Manage devices. Includes the raw token
+// (not just an id) so the client can tell which row is the device it's
+// currently on by comparing against its own local FCM token — this never
+// leaves the response to anyone but the device's own owner, since every
+// route here is scoped to req.user.id.
+export const listDevices = async (userId) => {
+  return prisma.pushRegistration.findMany({
+    where: { userId },
+    orderBy: { lastUsedAt: "desc" },
+    select: { id: true, token: true, deviceInfo: true, createdAt: true, lastUsedAt: true, active: true },
+  });
+};
+
+// Revokes one device by its registration id rather than its token, so
+// Settings → Manage devices can let someone remove a *different* device
+// (e.g. a lost phone) without that device's token ever having to be typed
+// or passed around client-side. Scoped to userId so a user can only ever
+// remove their own registrations.
+export const unregisterDeviceById = async ({ userId, id }) => {
+  const result = await prisma.pushRegistration.deleteMany({ where: { userId, id: Number(id) } });
+  return result.count > 0;
+};
+
 // --- Sending -------------------------------------------------------------
 
 // Deactivates a token FCM has reported as no longer valid, instead of

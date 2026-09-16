@@ -2,7 +2,7 @@ import express from "express";
 import { protect } from "../middleware/auth.js";
 import { createRateLimiter } from "../middleware/rateLimiter.js";
 import { listNotifications, markNotificationRead, markAllNotificationsRead } from "../controllers/notificationsController.js";
-import { registerPush, unregisterPush, getPushStatusHandler } from "../controllers/pushNotificationsController.js";
+import { registerPush, unregisterPush, getPushStatusHandler, listPushDevices, removePushDevice } from "../controllers/pushNotificationsController.js";
 
 // A device only ever (re-)registers on login or when the user flips the
 // Settings toggle, so this is generous while still blocking abuse.
@@ -21,5 +21,7 @@ router.patch("/read-all", protect, markAllNotificationsRead);
 router.post("/register", protect, pushRegisterLimiter.middleware, registerPush);
 router.delete("/unregister", protect, unregisterPush);
 router.get("/status", protect, getPushStatusHandler);
+router.get("/devices", protect, listPushDevices);
+router.delete("/devices/:id", protect, removePushDevice);
 
 export default router;

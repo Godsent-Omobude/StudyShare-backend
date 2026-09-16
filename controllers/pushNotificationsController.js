@@ -1,4 +1,4 @@
-import { registerDevice, unregisterDevice, getPushStatus } from "../services/pushNotificationService.js";
+import { registerDevice, unregisterDevice, getPushStatus, listDevices, unregisterDeviceById } from "../services/pushNotificationService.js";
 import { isFirebaseConfigured } from "../config/firebaseAdmin.js";
 
 const MAX_TOKEN_LENGTH = 4096;
@@ -60,5 +60,28 @@ export const getPushStatusHandler = async (req, res) => {
   } catch (error) {
     console.error("Push status error:", error);
     return res.status(500).json({ message: "Unable to load push notification status." });
+  }
+};
+
+export const listPushDevices = async (req, res) => {
+  try {
+    const devices = await listDevices(req.user.id);
+    return res.json({ devices });
+  } catch (error) {
+    console.error("List devices error:", error);
+    return res.status(500).json({ message: "Unable to load your devices." });
+  }
+};
+
+export const removePushDevice = async (req, res) => {
+  try {
+    const removed = await unregisterDeviceById({ userId: req.user.id, id: req.params.id });
+    if (!removed) {
+      return res.status(404).json({ message: "Device not found." });
+    }
+    return res.json({ message: "Device removed." });
+  } catch (error) {
+    console.error("Remove device error:", error);
+    return res.status(500).json({ message: "Unable to remove device." });
   }
 };

@@ -59,6 +59,12 @@ const selectSettingsUser = {
   showUsernameOnMaterials: true,
   theme: true,
   accentColor: true,
+  // Read-only account standing — surfaced in Settings → Account standing
+  // so a warning or suspension is visible before it escalates, instead of
+  // only appearing as a hard block from protect() (see middleware/auth.js).
+  copyrightWarnings: true,
+  suspendedUntil: true,
+  suspendedReason: true,
 };
 
 const cleanUser = (user) => ({
@@ -72,6 +78,9 @@ const cleanUser = (user) => ({
   showUsernameOnMaterials: user.showUsernameOnMaterials,
   theme: user.theme,
   accentColor: user.accentColor,
+  copyrightWarnings: user.copyrightWarnings,
+  suspendedUntil: user.suspendedUntil,
+  suspendedReason: user.suspendedReason,
 });
 
 
