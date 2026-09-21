@@ -152,7 +152,8 @@ router.patch("/profile", protect, async (req, res) => {
 
 router.patch("/appearance", protect, async (req, res) => {
   const allowedThemes = ["light", "dark", "system"];
-  const allowedAccents = ["blue", "red", "purple", "green", "yellow"];
+  // "blue" is the stored id of the default teal accent; "royalblue" is the real blue.
+  const allowedAccents = ["blue", "royalblue", "red", "purple", "green", "yellow"];
   const { theme, accentColor } = req.body;
 
   if (theme !== undefined && !allowedThemes.includes(theme)) {
