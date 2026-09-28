@@ -10,6 +10,21 @@ import { getMessaging } from "../config/firebaseAdmin.js";
 
 const MAX_DEVICE_INFO_LENGTH = 200;
 
+// Notification channel used by the native Android app (created in
+// frontend/src/firebase/messaging.js — the two ids must match). High
+// importance, so streak warnings and messages make a sound and pop up.
+const ANDROID_CHANNEL_ID = "study2gate_alerts";
+
+// Push for these types shows generic wording instead of the real text,
+// since the native app keeps receiving pushes after sign-out and a locked
+// phone's screen can be read by anyone. The full text is still visible
+// in-app (notification bell) once signed in.
+const GENERIC_PUSH_TYPES = new Set(["ACCOUNT_SECURITY", "COPYRIGHT"]);
+const GENERIC_PUSH_TEXT = {
+  title: "Study2Gate",
+  body: "You have a new alert. Open Study2Gate to view it.",
+};
+
 // Maps an in-app Notification "type" (see circleRealtime.js / Prisma
 // schema) to the Settings → Notifications category the user controls, and
 // to where clicking the resulting push notification should navigate.
@@ -53,13 +68,18 @@ const NOTIFICATION_TYPE_CONFIG = {
     category: "notifyFlashcardActivity",
     urlFor: () => "/my-flashcards",
   },
+  // ttlMs: how long FCM should keep trying to deliver if the phone is
+  // offline. A "study now to keep your streak" warning is useless hours
+  // later, so it expires instead of arriving stale.
   STREAK_AT_RISK: {
     category: "notifyFlashcardActivity",
     urlFor: () => "/",
+    ttlMs: 3 * 60 * 60 * 1000,
   },
   STREAK_BROKEN: {
     category: "notifyFlashcardActivity",
     urlFor: () => "/",
+    ttlMs: 12 * 60 * 60 * 1000,
   },
   ACCOUNT_SECURITY: {
     category: "notifyAccountSecurity",
@@ -185,16 +205,26 @@ export const sendPushForNotification = async (notification) => {
 
     const destinationUrl = config.urlFor(notification);
 
+    const isGeneric = GENERIC_PUSH_TYPES.has(notification.type);
+
     const message = {
       notification: {
-        title: notification.title,
-        body: notification.body,
+        title: isGeneric ? GENERIC_PUSH_TEXT.title : notification.title,
+        body: isGeneric ? GENERIC_PUSH_TEXT.body : notification.body,
       },
       data: {
         notificationId: String(notification.id),
         type: notification.type,
         circleId: notification.circleId ? String(notification.circleId) : "",
         url: destinationUrl,
+      },
+      // Native Android app. High priority so FCM delivers immediately
+      // even while the phone is idle (Doze) — needed for time-sensitive
+      // alerts like streak warnings. Ignored by web (webpush) tokens.
+      android: {
+        priority: "high",
+        ...(config.ttlMs ? { ttl: config.ttlMs } : {}),
+        notification: { channelId: ANDROID_CHANNEL_ID },
       },
       webpush: {
         fcmOptions: { link: destinationUrl },

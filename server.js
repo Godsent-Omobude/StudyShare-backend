@@ -13,6 +13,7 @@ import settingsRoutes from './routes/settings.js';
 import circleRoutes from './routes/circles.js';
 import notificationRoutes from './routes/notifications.js';
 import copyrightRoutes from './routes/copyright.js';
+import appVersionRoutes from './routes/appVersion.js';
 import { attachSocketServer } from './socket.js';
 import { startStreakScheduler } from './services/streakScheduler.js';
 import prisma from './config/prisma.js';
@@ -79,6 +80,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/circles', circleRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/copyright', copyrightRoutes);
+app.use('/api/app-version', appVersionRoutes);
 
 // Centralized error handler. Errors thrown inside a route's own
 // try/catch never reach this — they're already turned into a JSON
