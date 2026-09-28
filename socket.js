@@ -90,7 +90,6 @@ export const attachSocketServer = (httpServer) => {
       } catch (error) { ack({ ok: false, message: error.message || "Unable to remove member." }); }
     });
 
-    socket.on("disconnect", () => {});
   });
 
   return io;
