@@ -22,7 +22,7 @@ const streakSelect = {
 // services/streakScheduler.js) takes to get to this user — a broken
 // streak is reset here on the very next read/write even if the scheduler
 // hasn't run yet.
-const resolveStreak = async (userId, user, now = new Date()) => {
+export const resolveStreak = async (userId, user, now = new Date()) => {
   const { status, resetNeeded } = evaluateStreakStatus(user, now);
 
   if (resetNeeded && user.currentStreak !== 0) {
@@ -37,7 +37,7 @@ const resolveStreak = async (userId, user, now = new Date()) => {
   return { user, status };
 };
 
-const serializeStreak = (user, extra = {}) => ({
+export const serializeStreak = (user, extra = {}) => ({
   currentStreak: user.currentStreak,
   longestStreak: user.longestStreak,
   totalStudyDays: user.totalStudyDays,

@@ -48,3 +48,26 @@ export const verifyPolicyPendingToken = (token) => {
   }
   return decoded;
 };
+
+// Long-lived token for the native Android home-screen widget. Scoped to
+// read-only streak access only — it carries no session privileges and
+// cannot be used on any other /api route. Needed because the widget runs
+// in the background and can't rely on the 15-minute httpOnly auth cookie
+// (see utils/cookies.js IDLE_TIMEOUT_MS) staying valid between refreshes.
+const WIDGET_TOKEN_PURPOSE = "widget-streak-read";
+const WIDGET_TOKEN_EXPIRES_IN = "90d";
+
+export const createWidgetToken = (user) =>
+  jwt.sign(
+    { id: user.id, purpose: WIDGET_TOKEN_PURPOSE },
+    process.env.JWT_SECRET,
+    { expiresIn: WIDGET_TOKEN_EXPIRES_IN }
+  );
+
+export const verifyWidgetToken = (token) => {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  if (decoded?.purpose !== WIDGET_TOKEN_PURPOSE) {
+    throw new Error("Invalid widget-token purpose.");
+  }
+  return decoded;
+};
