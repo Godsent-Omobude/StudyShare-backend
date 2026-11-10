@@ -75,6 +75,32 @@ const publicUser = (user) => ({
 
 const createToken = (user) => createAuthToken(user);
 
+// ---------------------------------------------------------------------
+// Fingerprint login (Android app)
+//
+// The phone keeps a random secret in its Keystore, released only after the
+// fingerprint prompt. We store just the secret's hash. See the
+// BiometricDevice model in prisma/schema.prisma for the rotation details.
+// ---------------------------------------------------------------------
+const MAX_BIOMETRIC_DEVICES = 5;
+
+const hashBiometricSecret = (secret) =>
+  crypto.createHash("sha256").update(String(secret)).digest("hex");
+
+const generateBiometricSecret = () => crypto.randomBytes(32).toString("hex");
+
+const hashesMatch = (a, b) => {
+  if (!a || !b) return false;
+  const bufferA = Buffer.from(a, "hex");
+  const bufferB = Buffer.from(b, "hex");
+  return bufferA.length === bufferB.length && crypto.timingSafeEqual(bufferA, bufferB);
+};
+
+const BIOMETRIC_INVALID_RESPONSE = {
+  message: "Fingerprint login is no longer valid on this device. Please sign in with your password.",
+  code: "BIOMETRIC_INVALID",
+};
+
 router.get("/check-username/:username", async (req, res) => {
   try {
     const username = normalizeUsername(req.params.username);
@@ -375,6 +401,10 @@ router.post("/reset-password", async (req, res) => {
       },
     });
 
+    // A reset is the "I may have been compromised" path, so fingerprint
+    // login has to be switched on again afterwards.
+    await prisma.biometricDevice.deleteMany({ where: { userId: user.id } });
+
     return res.json({ message: "Password reset successfully. You can now log in." });
   } catch (error) {
     console.error("Reset password error:", error);
@@ -468,6 +498,155 @@ router.post("/resend-verification", resendVerificationLimiter.middleware, async 
   } catch (error) {
     console.error("Resend verification error:", error);
     return res.status(500).json({ message: "Unable to resend verification code." });
+  }
+});
+
+// Devices with fingerprint login switched on for this account. Lets the
+// user see and remove them from any browser, not just the phone itself.
+router.get("/biometric", protect, async (req, res) => {
+  try {
+    const devices = await prisma.biometricDevice.findMany({
+      where: { userId: req.user.id },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, deviceName: true, createdAt: true, lastUsedAt: true },
+    });
+    return res.json({ devices });
+  } catch (error) {
+    console.error("List biometric devices error:", error);
+    return res.status(500).json({ message: "Unable to load fingerprint devices." });
+  }
+});
+
+// Switching fingerprint login on needs a live session AND the password, so
+// someone holding an unlocked phone can't quietly enrol their own finger.
+router.post("/biometric/enroll", protect, loginLimiter.middleware, async (req, res) => {
+  const password = String(req.body.password || "");
+  const deviceName = String(req.body.deviceName || "").trim().slice(0, 80) || null;
+
+  try {
+    if (!password) {
+      return res.status(400).json({ message: "Enter your password to turn on fingerprint login." });
+    }
+
+    const record = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { password: true },
+    });
+
+    if (!record || !(await bcrypt.compare(password, record.password))) {
+      loginLimiter.recordAttempt(req);
+      return res.status(400).json({ message: "Password is incorrect." });
+    }
+
+    loginLimiter.reset(req);
+
+    // Reinstalls leave orphaned rows behind, so rather than blocking at the
+    // cap, retire the oldest devices to make room for this one.
+    const existing = await prisma.biometricDevice.findMany({
+      where: { userId: req.user.id },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    const overflow = existing.length - (MAX_BIOMETRIC_DEVICES - 1);
+    if (overflow > 0) {
+      await prisma.biometricDevice.deleteMany({
+        where: { id: { in: existing.slice(0, overflow).map((device) => device.id) } },
+      });
+    }
+
+    const secret = generateBiometricSecret();
+    const device = await prisma.biometricDevice.create({
+      data: {
+        userId: req.user.id,
+        secretHash: hashBiometricSecret(secret),
+        deviceName,
+      },
+    });
+
+    return res.status(201).json({ deviceId: device.id, secret });
+  } catch (error) {
+    console.error("Biometric enroll error:", error);
+    return res.status(500).json({ message: "Unable to turn on fingerprint login." });
+  }
+});
+
+// Same gates as the password login, but the credential is the device
+// secret. Failed attempts count against the same limiter as password
+// guesses.
+router.post("/biometric/login", loginLimiter.middleware, async (req, res) => {
+  const deviceId = String(req.body.deviceId || "").trim();
+  const secret = String(req.body.secret || "");
+
+  try {
+    if (!deviceId || !secret) {
+      return res.status(400).json(BIOMETRIC_INVALID_RESPONSE);
+    }
+
+    const device = await prisma.biometricDevice.findUnique({
+      where: { id: deviceId },
+      include: { user: true },
+    });
+
+    const presentedHash = hashBiometricSecret(secret);
+    const matchesCurrent = Boolean(device) && hashesMatch(presentedHash, device.secretHash);
+    const matchesPrevious =
+      Boolean(device) && !matchesCurrent && hashesMatch(presentedHash, device.prevSecretHash);
+
+    if (!device || !(matchesCurrent || matchesPrevious)) {
+      loginLimiter.recordAttempt(req);
+      return res.status(400).json(BIOMETRIC_INVALID_RESPONSE);
+    }
+
+    const user = device.user;
+
+    if (!user.emailVerified) {
+      return res.status(403).json({
+        verificationRequired: true,
+        email: user.email,
+        message: "Please verify your email address before logging in.",
+      });
+    }
+
+    if (!hasAcceptedCurrentCopyrightPolicy(user)) {
+      return res.status(403).json({
+        copyrightPolicyAcceptanceRequired: true,
+        pendingToken: createPolicyPendingToken(user),
+        message: "Please review and accept the Copyright Policy to continue.",
+      });
+    }
+
+    // Rotate. The hash the phone just presented stays valid as "previous",
+    // so if this response is lost before the phone saves the new secret,
+    // the next attempt still works.
+    const newSecret = generateBiometricSecret();
+    await prisma.biometricDevice.update({
+      where: { id: device.id },
+      data: {
+        secretHash: hashBiometricSecret(newSecret),
+        prevSecretHash: presentedHash,
+        lastUsedAt: new Date(),
+      },
+    });
+
+    loginLimiter.reset(req);
+    setAuthCookie(res, createToken(user));
+
+    return res.json({ ...publicUser(user), biometricSecret: newSecret });
+  } catch (error) {
+    console.error("Biometric login error:", error);
+    return res.status(500).json({ message: "Authentication system failure." });
+  }
+});
+
+router.delete("/biometric/:id", protect, async (req, res) => {
+  try {
+    await prisma.biometricDevice.deleteMany({
+      where: { id: String(req.params.id), userId: req.user.id },
+    });
+    return res.json({ message: "Fingerprint login turned off for that device." });
+  } catch (error) {
+    console.error("Delete biometric device error:", error);
+    return res.status(500).json({ message: "Unable to turn off fingerprint login." });
   }
 });
 

@@ -62,6 +62,7 @@ model User {
   notifyAnnouncements      Boolean @default(true)
 
   pushRegistrations PushRegistration[]
+  biometricDevices  BiometricDevice[]
 
   // --- Copyright moderation / account enforcement ---
   // Temporary hold short of full termination. A suspended user can still
@@ -717,4 +718,24 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([userId, read, createdAt])
+}
+
+// One row per phone that has fingerprint login switched on. The raw secret
+// lives only in that phone's Android Keystore (unlocked by the fingerprint
+// prompt) — only its SHA-256 hash is stored here, so a database leak can't
+// be replayed as a login. The secret rotates on every successful use;
+// prevSecretHash is kept for one rotation so a response that never reached
+// the phone (dropped connection) can't lock the user out.
+model BiometricDevice {
+  id             String    @id @default(uuid())
+  userId         Int
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  secretHash     String
+  prevSecretHash String?
+  // Free-text label, best-effort from the app's user agent (e.g. "SM-A546B").
+  deviceName     String?
+  createdAt      DateTime  @default(now())
+  lastUsedAt     DateTime?
+
+  @@index([userId])
 }

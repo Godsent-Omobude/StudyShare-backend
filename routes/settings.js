@@ -359,6 +359,10 @@ router.patch("/password", protect, async (req, res) => {
       data: { password: hashedPassword, tokenVersion: { increment: 1 } },
     });
 
+    // Fingerprint login is tied to the old credentials' trust, so it has
+    // to be switched on again with the new password.
+    await prisma.biometricDevice.deleteMany({ where: { userId: req.user.id } });
+
     setAuthCookie(res, createAuthToken(updatedUser));
     res.json({ message: "Password changed successfully." });
   } catch (error) {
