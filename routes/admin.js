@@ -1,6 +1,7 @@
 import express from "express";
 import { protect } from "../middleware/auth.js";
 import { admin } from "../middleware/admin.js";
+import { createRateLimiter } from "../middleware/rateLimiter.js";
 import {
   getAdminStats,
   getAdminUsers,
@@ -25,6 +26,21 @@ import {
   decideCopyrightDispute,
   getCopyrightAuditLog,
 } from "../controllers/copyrightAdminController.js";
+import {
+  createAnnouncement,
+  listAnnouncements,
+  updateAnnouncement,
+  deleteAnnouncement,
+} from "../controllers/announcementsController.js";
+
+// An announcement reaches every user, so sending one is deliberately rate
+// limited even for admins (guards against a stuck button or a stolen session).
+const announcementLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  keyPrefix: "admin-announcement",
+  message: "You have sent too many announcements. Please try again later.",
+});
 
 const router = express.Router();
 
@@ -53,6 +69,12 @@ router.delete("/users/:id", deleteUser);
 // copyright-related).
 router.get("/files", getAdminFiles);
 router.delete("/files/:id", deleteAdminFile);
+
+// --- Announcements (message to all users) --------------------------------
+router.post("/announcements", announcementLimiter.middleware, createAnnouncement);
+router.get("/announcements", listAnnouncements);
+router.patch("/announcements/:id", updateAnnouncement);
+router.delete("/announcements/:id", deleteAnnouncement);
 
 // --- Copyright Review Queue ---------------------------------------------
 router.get("/copyright/stats", getCopyrightStats);

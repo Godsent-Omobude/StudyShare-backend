@@ -64,6 +64,10 @@ model User {
   pushRegistrations PushRegistration[]
   biometricDevices  BiometricDevice[]
 
+  // --- Admin announcements ---
+  announcementsAuthored  Announcement[]          @relation("AnnouncementAuthor")
+  announcementDismissals AnnouncementDismissal[]
+
   // --- Copyright moderation / account enforcement ---
   // Temporary hold short of full termination. A suspended user can still
   // log in (so they see why) but protect() blocks everything else while
@@ -716,6 +720,12 @@ model Notification {
   message     CircleMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
   groupKey    String? @unique
 
+  // Set only for admin announcements, so deleting an announcement also
+  // removes the bell entry it created for every user.
+  announcementId Int?
+  announcement   Announcement? @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@index([announcementId])
   @@index([userId, createdAt])
   @@index([userId, read, createdAt])
 }
@@ -737,5 +747,50 @@ model BiometricDevice {
   createdAt      DateTime  @default(now())
   lastUsedAt     DateTime?
 
+  @@index([userId])
+}
+
+// A message an admin sends to every user. One row here drives three things:
+// the popup shown at login/app-open (until each user dismisses it), a bell
+// entry per user (Notification rows with announcementId), and, if sendPush
+// is on, a push notification to every registered device.
+model Announcement {
+  id        Int      @id @default(autoincrement())
+  title     String
+  body      String
+  // Optional call-to-action. linkUrl is either an in-app path ("/materials")
+  // or a validated https URL; see announcementsController.js.
+  linkUrl   String?
+  linkLabel String?
+  // Retired announcements stop appearing as popups but stay in the history.
+  active    Boolean  @default(true)
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+
+  sendPush        Boolean   @default(false)
+  // Filled in once the background push fan-out has finished.
+  pushedAt        DateTime?
+  pushDelivered   Int       @default(0)
+  pushFailed      Int       @default(0)
+
+  createdById Int?
+  createdBy   User? @relation("AnnouncementAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  dismissals    AnnouncementDismissal[]
+  notifications Notification[]
+
+  @@index([active, createdAt])
+}
+
+// One row per user who has closed an announcement's popup, so it is only
+// ever shown to each person once.
+model AnnouncementDismissal {
+  announcementId Int
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  userId         Int
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dismissedAt    DateTime     @default(now())
+
+  @@id([announcementId, userId])
   @@index([userId])
 }

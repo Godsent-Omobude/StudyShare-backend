@@ -27,7 +27,26 @@ export const getDocumentInfo = async (req, res) => {
     const extension = path.extname(req.file.originalname).toLowerCase();
 
     if (extension === ".pdf") {
-      const totalPages = await getPdfPageCount(uploadedFilePath);
+      let totalPages;
+
+      try {
+        totalPages = await getPdfPageCount(uploadedFilePath);
+      } catch (parseError) {
+        // Damaged or password-protected files land here. Log the real
+        // reason, but don't pass the library's raw message to the user.
+        console.error("PDF page count error:", parseError);
+        return res.status(422).json({
+          success: false,
+          message: "This PDF couldn't be read. It may be damaged or password-protected."
+        });
+      }
+
+      if (!Number.isInteger(totalPages) || totalPages < 1) {
+        return res.status(422).json({
+          success: false,
+          message: "This PDF couldn't be read. It may be damaged or empty."
+        });
+      }
 
       return res.status(200).json({
         success: true,
@@ -53,7 +72,7 @@ export const getDocumentInfo = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: error.message || "Unable to read the document."
+      message: "Unable to read the document. Please try again."
     });
   } finally {
     if (uploadedFilePath) {

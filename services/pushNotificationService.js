@@ -87,7 +87,7 @@ const NOTIFICATION_TYPE_CONFIG = {
   },
   ANNOUNCEMENT: {
     category: "notifyAnnouncements",
-    urlFor: () => "/dashboard",
+    urlFor: () => "/",
   },
   COPYRIGHT: {
     category: "notifyAccountSecurity",
@@ -257,4 +257,79 @@ export const sendPushForNotification = async (notification) => {
   } catch (error) {
     console.error("[pushNotificationService] Failed to send push notification:", error.message);
   }
+};
+
+// --- Admin announcements -------------------------------------------------
+
+// FCM accepts at most 500 tokens per multicast call.
+const MULTICAST_CHUNK_SIZE = 500;
+
+// Sends one admin announcement to every active device whose owner hasn't
+// switched off "Announcements" in Settings and whose account isn't
+// terminated. Tokens are batched, and invalid ones are deactivated exactly
+// like in sendPushForNotification.
+//
+// Never throws (same reasoning as above) and returns delivery counts so the
+// caller can store them on the Announcement row.
+export const sendAnnouncementPush = async (announcement) => {
+  const result = { attempted: 0, delivered: 0, failed: 0 };
+
+  try {
+    const messaging = getMessaging();
+    if (!messaging) return result; // Firebase not configured — silently skip.
+
+    const registrations = await prisma.pushRegistration.findMany({
+      where: { active: true, user: { notifyAnnouncements: true, terminatedAt: null } },
+      select: { token: true },
+    });
+    if (registrations.length === 0) return result;
+
+    // Only in-app paths are used as the tap destination; an external link is
+    // opened from the popup instead of straight from a notification.
+    const link = announcement.linkUrl;
+    const destinationUrl = link && link.startsWith("/") ? link : "/";
+
+    const tokens = registrations.map((r) => r.token);
+    result.attempted = tokens.length;
+
+    for (let start = 0; start < tokens.length; start += MULTICAST_CHUNK_SIZE) {
+      const chunk = tokens.slice(start, start + MULTICAST_CHUNK_SIZE);
+
+      const response = await messaging.sendEachForMulticast({
+        notification: { title: announcement.title, body: announcement.body },
+        data: {
+          notificationId: "",
+          type: "ANNOUNCEMENT",
+          announcementId: String(announcement.id),
+          circleId: "",
+          url: destinationUrl,
+        },
+        android: {
+          priority: "high",
+          // An old announcement isn't worth delivering days later.
+          ttl: 24 * 60 * 60 * 1000,
+          notification: { channelId: ANDROID_CHANNEL_ID },
+        },
+        webpush: { fcmOptions: { link: destinationUrl } },
+        tokens: chunk,
+      });
+
+      result.delivered += response.successCount;
+      result.failed += response.failureCount;
+
+      if (response.failureCount > 0) {
+        await Promise.all(
+          response.responses.map((item, index) =>
+            !item.success && isUnregisteredError(item.error)
+              ? deactivateToken(chunk[index])
+              : Promise.resolve()
+          )
+        );
+      }
+    }
+  } catch (error) {
+    console.error("[pushNotificationService] Failed to send announcement push:", error.message);
+  }
+
+  return result;
 };

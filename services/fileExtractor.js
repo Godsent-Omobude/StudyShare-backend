@@ -9,7 +9,8 @@ import mammoth from "mammoth";
  * while data.numpages still reflects the document's true total page count.
  */
 export const getPdfPageCount = async (filePath) => {
-  const buffer = fs.readFileSync(filePath);
+  // Async read so a large upload doesn't freeze the whole server while it loads.
+  const buffer = await fs.promises.readFile(filePath);
   const data = await pdf(buffer, { max: 1 });
   return data.numpages;
 };
@@ -19,7 +20,8 @@ export const getPdfPageCount = async (filePath) => {
  * Falls back to the whole document when no range is given.
  */
 const extractPdfText = async (filePath, startPage, endPage) => {
-  const buffer = fs.readFileSync(filePath);
+  // Async read so a large upload doesn't freeze the whole server while it loads.
+  const buffer = await fs.promises.readFile(filePath);
 
   const options = {};
 

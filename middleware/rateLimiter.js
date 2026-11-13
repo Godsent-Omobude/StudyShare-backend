@@ -108,6 +108,18 @@ export const aiGenerationLimiter = createRateLimiter({
   message: "Too many flashcard generation requests. Please try again later.",
 });
 
+// PDF page-count checks run every time a PDF is picked (and on "Try again"),
+// and each one parses an uploaded file. This is deliberately generous — a
+// whole campus can share one IP — and only exists to stop a runaway loop or
+// abuse. It is separate from aiGenerationLimiter so analysing files never
+// eats into a student's flashcard-generation allowance.
+export const pdfInfoLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  keyPrefix: "pdf-info",
+  message: "Too many PDF checks. Please wait a few minutes and try again.",
+});
+
 // Copyright reports and disputes are free-text forms an abusive actor
 // could otherwise spam to harass an uploader or flood the review queue.
 export const copyrightReportLimiter = createRateLimiter({
