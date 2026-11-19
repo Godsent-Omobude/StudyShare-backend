@@ -2,7 +2,8 @@ import fs from "fs/promises";
 import path from "path";
 import prisma from "../config/prisma.js";
 import { extractText, getPdfPageCount } from "../services/fileExtractor.js";
-import { generateFlashcards, default as ai } from "../services/flashcardGenerator.js";
+import { generateFlashcards } from "../services/flashcardGenerator.js";
+import { generateTextWithFallback } from "../services/ai/aiProviderManager.js";
 import {
   VALID_RATINGS,
   scheduleNextReview,
@@ -598,6 +599,35 @@ export const createFlashcards = async (req, res) => {
 };
 
 
+// Turns a model's raw reply into the evaluation object. Throwing here makes
+// the provider chain discard this reply and try the next provider.
+const parseEvaluationOutput = (output) => {
+  const cleaned = String(output)
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    // Some fallback models wrap the JSON in a sentence — pull the object out.
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start === -1 || end <= start) {
+      throw new Error("Evaluation output was not valid JSON.");
+    }
+    parsed = JSON.parse(cleaned.slice(start, end + 1));
+  }
+
+  if (!parsed || typeof parsed !== "object" || Number.isNaN(Number(parsed.score))) {
+    throw new Error("Evaluation output had no usable score.");
+  }
+
+  return parsed;
+};
+
 export const evaluateFlashcardAnswer = async (req, res) => {
   try {
     const { question, expectedAnswer, userAnswer } = req.body;
@@ -681,24 +711,8 @@ Return exactly:
 }
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt
-    });
-
-    const output = response.text?.trim();
-
-    if (!output) {
-      throw new Error("Gemini returned an empty evaluation.");
-    }
-
-    const cleanedOutput = output
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    const evaluation = JSON.parse(cleanedOutput);
+    // Gemini first, then Groq, then OpenRouter if it is busy or down.
+    const evaluation = await generateTextWithFallback(prompt, parseEvaluationOutput);
     const score = Math.max(
       0,
       Math.min(100, Number(evaluation.score) || 0)
@@ -721,7 +735,7 @@ Return exactly:
 
     return res.status(500).json({
       success: false,
-      message: error.message || "Unable to evaluate your answer."
+      message: "System busy, please try again"
     });
   }
 };

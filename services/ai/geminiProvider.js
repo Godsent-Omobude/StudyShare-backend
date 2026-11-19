@@ -8,9 +8,9 @@ const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 export const PROVIDER_NAME = "Gemini";
 export const isConfigured = () => Boolean(process.env.GEMINI_API_KEY);
 
-export async function generateFlashcards(documentText, count, difficulty) {
-  const prompt = buildFlashcardPrompt(documentText, count, difficulty);
-
+// Raw text completion, shared by flashcard generation and answer
+// evaluation. Throws ProviderError with a classified kind, exactly as before.
+export async function generateText(prompt) {
   let response;
   try {
     response = await ai.models.generateContent({
@@ -35,5 +35,11 @@ export async function generateFlashcards(documentText, count, difficulty) {
     });
   }
 
+  return output;
+}
+
+export async function generateFlashcards(documentText, count, difficulty) {
+  const prompt = buildFlashcardPrompt(documentText, count, difficulty);
+  const output = await generateText(prompt);
   return parseFlashcardsResponse(output, PROVIDER_NAME);
 }

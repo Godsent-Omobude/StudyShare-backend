@@ -11,8 +11,9 @@ const REQUEST_TIMEOUT_MS = 30000;
 export const PROVIDER_NAME = "Groq";
 export const isConfigured = () => Boolean(process.env.GROQ_API_KEY);
 
-export async function generateFlashcards(documentText, count, difficulty) {
-  const prompt = buildFlashcardPrompt(documentText, count, difficulty);
+// Raw text completion, shared by flashcard generation and answer
+// evaluation. Throws ProviderError with a classified kind, exactly as before.
+export async function generateText(prompt) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -68,5 +69,11 @@ export async function generateFlashcards(documentText, count, difficulty) {
     });
   }
 
+  return output;
+}
+
+export async function generateFlashcards(documentText, count, difficulty) {
+  const prompt = buildFlashcardPrompt(documentText, count, difficulty);
+  const output = await generateText(prompt);
   return parseFlashcardsResponse(output, PROVIDER_NAME);
 }

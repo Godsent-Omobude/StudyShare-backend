@@ -162,3 +162,50 @@ export async function generateFlashcards(documentText, count, difficulty) {
 
   return finalCards;
 }
+
+// Runs one plain-text prompt through the same Gemini -> Groq -> OpenRouter
+// chain used for flashcards. Used for grading a student's answer, which
+// needs a single JSON reply rather than a set of flashcards.
+//
+// `parse` turns the model's raw text into the final result. If it throws
+// (e.g. the model replied with something that isn't valid JSON), that
+// provider's answer is discarded and the next provider is tried.
+//
+// Throws only when every configured provider failed, with a clean generic
+// message — never a raw provider error. Details are logged (no keys).
+export async function generateTextWithFallback(prompt, parse) {
+  for (const provider of PROVIDERS) {
+    const { PROVIDER_NAME: name, isConfigured, generateText: call } = provider;
+
+    if (!isConfigured()) {
+      log(`${name} is not configured (missing API key) — skipping for evaluation.`);
+      continue;
+    }
+
+    log(`Trying ${name} for answer evaluation`);
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const output = await call(prompt);
+        return parse(output);
+      } catch (error) {
+        const isProviderError = error?.name === "ProviderError";
+        const kind = isProviderError ? error.kind || "transient" : "invalid_output";
+
+        // One short retry for a hiccup (like Gemini's 503 "high demand"),
+        // then move on. Quota, auth, bad-request and unparseable output
+        // go straight to the next provider.
+        if (kind === "transient" && attempt === 1) {
+          log(`${name} had a transient failure (${error?.statusCode || "no status"}) — retrying once.`);
+          await sleep(TRANSIENT_RETRY_DELAY_MS);
+          continue;
+        }
+
+        log(`${name} failed for evaluation (${kind}${error?.statusCode ? ` ${error.statusCode}` : ""}) — moving on.`);
+        break;
+      }
+    }
+  }
+
+  throw new Error("AI evaluation is temporarily unavailable. Please try again later.");
+}
