@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
+import sharp from "sharp";
 import prisma from "../config/prisma.js";
 import { protect } from "../middleware/auth.js";
 import { uploadToB2, deleteFromB2 } from "../services/b2Storage.js";
@@ -13,6 +14,82 @@ import { setAuthCookie } from "../utils/cookies.js";
 
 const router = express.Router();
 const profileUploadDir = "uploads/profile";
+
+// Profile pictures are only ever shown as small circles, so everything is
+// stored as a 256x256 WebP (a few KB to ~25 KB) instead of the original
+// photo (up to 5 MB). .rotate() applies the phone's EXIF orientation, and
+// sharp drops metadata such as GPS location.
+const AVATAR_SIZE = 256;
+
+// Pictures uploaded before resizing existed are shrunk the first time they
+// are requested, if they are bigger than this.
+const AVATAR_MIGRATE_ABOVE_BYTES = 150 * 1024;
+
+// A year. Safe because a picture's object key is a fresh UUID for every
+// upload — the content behind a given key never changes — and the frontend
+// puts that key in the request URL (?v=...), so a new upload is a new URL.
+const AVATAR_CACHE_CONTROL = "private, max-age=31536000, immutable";
+
+const toAvatarBuffer = (input) =>
+  sharp(input)
+    .rotate()
+    .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: "cover", position: "centre" })
+    .webp({ quality: 80 })
+    .toBuffer();
+
+const streamToBuffer = async (stream) => {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+};
+
+// Users whose old picture is being shrunk right now, so two requests at
+// once can't both do it.
+const migratingAvatars = new Set();
+
+// Shrinks an old, oversized picture into a new WebP object and points the
+// user at it. Returns the small buffer, or null if anything went wrong or
+// the picture changed in the meantime (the caller then serves the original).
+const migrateOldAvatar = async (userId, oldKey, originalBuffer) => {
+  if (migratingAvatars.has(userId)) return null;
+  migratingAvatars.add(userId);
+
+  const tempPath = `${profileUploadDir}/${Date.now()}-${randomUUID()}.avatar.webp`;
+  const newKey = `profile-pictures/${userId}/${randomUUID()}.webp`;
+  let uploaded = false;
+
+  try {
+    const small = await toAvatarBuffer(originalBuffer);
+    await fs.promises.writeFile(tempPath, small);
+    await uploadToB2({ filePath: tempPath, objectKey: newKey, contentType: "image/webp" });
+    uploaded = true;
+
+    // Only switch if the user still has the picture we just shrank — never
+    // overwrite a newer upload made while this was running.
+    const { count } = await prisma.user.updateMany({
+      where: { id: userId, profilePicture: oldKey },
+      data: { profilePicture: newKey },
+    });
+
+    if (count === 0) {
+      await deleteFromB2(newKey).catch(() => {});
+      return null;
+    }
+
+    await deleteFromB2(oldKey).catch((error) =>
+      console.error("Old profile picture cleanup error:", error)
+    );
+
+    return small;
+  } catch (error) {
+    console.error("Profile picture shrink error:", error);
+    if (uploaded) await deleteFromB2(newKey).catch(() => {});
+    return null;
+  } finally {
+    migratingAvatars.delete(userId);
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+};
 
 if (!fs.existsSync(profileUploadDir)) {
   fs.mkdirSync(profileUploadDir, { recursive: true });
@@ -97,6 +174,20 @@ router.get("/profile-picture", protect, async (req, res) => {
 
     const { getFromB2 } = await import("../services/b2Storage.js");
     const b2File = await getFromB2(user.profilePicture);
+
+    res.setHeader("Cache-Control", AVATAR_CACHE_CONTROL);
+
+    // Old, oversized picture: shrink it once, for everyone from now on.
+    // If that fails for any reason, the original is still served as before.
+    if (b2File.ContentLength !== undefined && b2File.ContentLength > AVATAR_MIGRATE_ABOVE_BYTES) {
+      const original = await streamToBuffer(b2File.Body);
+      const small = await migrateOldAvatar(req.user.id, user.profilePicture, original);
+
+      const body = small || original;
+      res.setHeader("Content-Type", small ? "image/webp" : b2File.ContentType || "image/jpeg");
+      res.setHeader("Content-Length", body.length);
+      return res.end(body);
+    }
 
     res.setHeader("Content-Type", b2File.ContentType || "image/jpeg");
     if (b2File.ContentLength !== undefined) {
@@ -263,14 +354,35 @@ router.post("/profile-picture", protect, profileUpload.single("profilePicture"),
   }
 
   let newObjectKey = null;
+  const processedPath = `${req.file.path}.avatar.webp`;
+
+  const cleanupTempFiles = async () => {
+    await fs.promises.unlink(req.file.path).catch(() => {});
+    await fs.promises.unlink(processedPath).catch(() => {});
+  };
+
+  // Shrink first. A file that only has an image extension but isn't a real
+  // image fails here with a clear message instead of a vague 500 later.
+  let avatar;
+  try {
+    avatar = await toAvatarBuffer(req.file.path);
+  } catch (imageError) {
+    console.error("Profile picture processing error:", imageError);
+    await cleanupTempFiles();
+    return res.status(400).json({
+      message: "We couldn't read that image. Please choose a different photo.",
+    });
+  }
 
   try {
-    newObjectKey = `profile-pictures/${req.user.id}/${randomUUID()}${path.extname(req.file.originalname).toLowerCase()}`;
+    await fs.promises.writeFile(processedPath, avatar);
+
+    newObjectKey = `profile-pictures/${req.user.id}/${randomUUID()}.webp`;
 
     await uploadToB2({
-      filePath: req.file.path,
+      filePath: processedPath,
       objectKey: newObjectKey,
-      contentType: req.file.mimetype,
+      contentType: "image/webp",
     });
 
     const oldUser = await prisma.user.findUnique({
@@ -284,7 +396,7 @@ router.post("/profile-picture", protect, profileUpload.single("profilePicture"),
       select: selectSettingsUser,
     });
 
-    await fs.promises.unlink(req.file.path).catch(() => {});
+    await cleanupTempFiles();
 
     if (oldUser?.profilePicture) {
       await deleteFromB2(oldUser.profilePicture).catch((error) =>
@@ -294,7 +406,7 @@ router.post("/profile-picture", protect, profileUpload.single("profilePicture"),
 
     res.json(cleanUser(user));
   } catch (error) {
-    await fs.promises.unlink(req.file.path).catch(() => {});
+    await cleanupTempFiles();
     if (newObjectKey) await deleteFromB2(newObjectKey).catch(() => {});
 
     console.error("Profile picture upload error:", error);
